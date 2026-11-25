@@ -1,0 +1,1799 @@
+import { useMemo, useState, type FormEvent } from 'react';
+import {
+  AlertCircle,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Check,
+  CheckCircle2,
+  Copy,
+  CreditCard,
+  Download,
+  FileCode2,
+  History,
+  Package,
+  Plus,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  Users,
+  X,
+} from 'lucide-react';
+import { apiRequest } from '../lib/api';
+import { exportRowsToCsv, formatCurrency, formatDate, formatDateTime } from '../lib/format';
+import type {
+  AdminOverviewData,
+  InvestmentPackage,
+  PaymentInstruction,
+  PaymentMethod,
+  Profile,
+  RequestStatus,
+} from '../types';
+import { StatusLabel } from './StatusLabel';
+
+type AdminTab = 'deposits' | 'withdrawals' | 'members' | 'packages' | 'allocations' | 'instructions' | 'ledger';
+
+interface AdminDashboardProps {
+  currentAdmin: Profile | null;
+  data: AdminOverviewData | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => Promise<void>;
+}
+
+interface ReviewPromptState {
+  kind: 'deposit' | 'withdrawal';
+  action: 'approve' | 'reject';
+  id: string;
+  label: string;
+}
+
+export function AdminDashboard({
+  currentAdmin,
+  data,
+  loading,
+  error,
+  onRefresh,
+}: AdminDashboardProps) {
+  const [tab, setTab] = useState<AdminTab>('deposits');
+  const [statusFilter, setStatusFilter] = useState<'all' | RequestStatus>('pending');
+  const [memberSearch, setMemberSearch] = useState('');
+  const [ledgerSearch, setLedgerSearch] = useState('');
+  const [ledgerTypeFilter, setLedgerTypeFilter] = useState<string>('all');
+  const [actionBusy, setActionBusy] = useState(false);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Review note modal
+  const [reviewPrompt, setReviewPrompt] = useState<ReviewPromptState | null>(null);
+  const [reviewNote, setReviewNote] = useState('');
+
+  // Package edit / create modal
+  const [editingPkg, setEditingPkg] = useState<Partial<InvestmentPackage> & { isNew?: boolean } | null>(null);
+
+  // Payment instruction edit state
+  const [editingInstruction, setEditingInstruction] = useState<PaymentInstruction | null>(null);
+
+  // Member inspect modal
+  const [inspectedMember, setInspectedMember] = useState<Profile | null>(null);
+
+  // One-click Schema SQL helper when DB tables are not yet initialized
+  const [sqlText, setSqlText] = useState<string | null>(null);
+  const [sqlCopied, setSqlCopied] = useState(false);
+  const [sqlLoading, setSqlLoading] = useState(false);
+
+  const memberLookup = useMemo(() => {
+    const map = new Map<string, Profile>();
+    if (data?.members) {
+      for (const m of data.members) {
+        map.set(m.id, m);
+      }
+    }
+    return map;
+  }, [data?.members]);
+
+  if (!currentAdmin || currentAdmin.role !== 'admin') {
+    return (
+      <main className="max-w-2xl mx-auto px-4 py-16">
+        <div className="bg-red-50 border border-red-200 rounded-xl p-6 space-y-2">
+          <div className="flex items-center gap-2 text-red-800 font-semibold">
+            <ShieldAlert className="w-5 h-5" />
+            <span>Access Denied</span>
+          </div>
+          <p className="text-sm text-red-700">
+            Administrator privileges are required to view or operate the SMART INVEST Admin Panel.
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  if (loading && !data) {
+    return (
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-6">
+        <div className="h-8 w-64 bg-slate-200 animate-pulse rounded" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((idx) => (
+            <div key={idx} className="h-28 bg-slate-100 border border-slate-200 animate-pulse rounded-xl" />
+          ))}
+        </div>
+        <div className="h-72 bg-slate-100 border border-slate-200 animate-pulse rounded-xl" />
+      </main>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <main className="max-w-3xl mx-auto px-4 py-16">
+        <div className="bg-red-50 border border-red-200 rounded-xl p-6 space-y-3">
+          <div className="flex items-center gap-2 text-red-800 font-semibold">
+            <AlertCircle className="w-5 h-5" />
+            <span>Unable to Load Admin Panel</span>
+          </div>
+          <p className="text-sm text-red-700">{error}</p>
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-red-700 hover:bg-red-800 text-white text-xs font-semibold rounded-lg cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Retry</span>
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (!data) return null;
+
+  const { members, deposits, withdrawals, packages, paymentInstructions, ledger } = data;
+  const pendingDeposits = deposits.filter((d) => d.status === 'pending');
+  const pendingWithdrawals = withdrawals.filter((w) => w.status === 'pending');
+  const activeMembers = members.filter((m) => m.status === 'active').length;
+  const totalVerifiedBalances = members.reduce((sum, m) => sum + Number(m.available_balance || 0), 0);
+
+  const filteredDeposits = deposits.filter((d) =>
+    statusFilter === 'all' ? true : d.status === statusFilter
+  );
+  const filteredWithdrawals = withdrawals.filter((w) =>
+    statusFilter === 'all' ? true : w.status === statusFilter
+  );
+  const filteredMembers = members.filter((m) => {
+    const q = memberSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      m.email.toLowerCase().includes(q) ||
+      m.full_name.toLowerCase().includes(q) ||
+      m.phone.toLowerCase().includes(q)
+    );
+  });
+  const filteredLedger = ledger.filter((entry) => {
+    if (ledgerTypeFilter !== 'all' && entry.entry_type !== ledgerTypeFilter) return false;
+    const q = ledgerSearch.trim().toLowerCase();
+    if (!q) return true;
+    const owner = memberLookup.get(entry.user_id);
+    return (
+      entry.description.toLowerCase().includes(q) ||
+      (owner?.email.toLowerCase().includes(q) ?? false) ||
+      (owner?.full_name.toLowerCase().includes(q) ?? false)
+    );
+  });
+
+  const handleConfirmReview = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!reviewPrompt) return;
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      const endpoint =
+        reviewPrompt.kind === 'deposit'
+          ? `/api/admin/deposits/${reviewPrompt.id}/${reviewPrompt.action}`
+          : `/api/admin/withdrawals/${reviewPrompt.id}/${reviewPrompt.action}`;
+      await apiRequest(endpoint, {
+        method: 'POST',
+        requireAuth: true,
+        body: { admin_note: reviewNote.trim() || undefined },
+      });
+      setFeedback({
+        type: 'success',
+        text: `${reviewPrompt.kind === 'deposit' ? 'Deposit' : 'Withdrawal'} request ${
+          reviewPrompt.action === 'approve' ? 'approved' : 'rejected'
+        }.`,
+      });
+      setReviewPrompt(null);
+      setReviewNote('');
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to process request.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleToggleMemberStatus = async (member: Profile) => {
+    const nextStatus = member.status === 'active' ? 'deactivated' : 'active';
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      await apiRequest(`/api/admin/members/${member.id}/status`, {
+        method: 'PATCH',
+        requireAuth: true,
+        body: { status: nextStatus },
+      });
+      setFeedback({
+        type: 'success',
+        text: `${member.email} is now ${nextStatus}.`,
+      });
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to update member status.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleToggleMemberRole = async (member: Profile) => {
+    const nextRole = member.role === 'admin' ? 'member' : 'admin';
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      await apiRequest(`/api/admin/members/${member.id}/role`, {
+        method: 'PATCH',
+        requireAuth: true,
+        body: { role: nextRole },
+      });
+      setFeedback({
+        type: 'success',
+        text: `${member.email} role updated to ${nextRole}.`,
+      });
+      setInspectedMember((prev) => (prev && prev.id === member.id ? { ...prev, role: nextRole } : prev));
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to update member role.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleTogglePackageActive = async (pkg: InvestmentPackage) => {
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      await apiRequest(`/api/admin/packages/${pkg.id}`, {
+        method: 'PATCH',
+        requireAuth: true,
+        body: { is_active: !pkg.is_active },
+      });
+      setFeedback({
+        type: 'success',
+        text: `${pkg.name} is now ${!pkg.is_active ? 'active' : 'deactivated'}.`,
+      });
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to update package visibility.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleMarkPurchaseStatus = async (purchaseId: string, nextStatus: 'active' | 'completed') => {
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      await apiRequest(`/api/admin/purchases/${purchaseId}/status`, {
+        method: 'PATCH',
+        requireAuth: true,
+        body: { status: nextStatus },
+      });
+      setFeedback({
+        type: 'success',
+        text: `Allocation marked as ${nextStatus}.`,
+      });
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to update allocation status.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleSavePackage = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editingPkg) return;
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      if (editingPkg.isNew) {
+        await apiRequest('/api/admin/packages', {
+          method: 'POST',
+          requireAuth: true,
+          body: {
+            name: editingPkg.name,
+            slug: editingPkg.slug,
+            tier_order: Number(editingPkg.tier_order || 5),
+            price: Number(editingPkg.price),
+            duration_days: Number(editingPkg.duration_days),
+            daily_return_rate: Number(editingPkg.daily_return_rate ?? 30),
+            risk_level: editingPkg.risk_level || 'Moderate',
+            summary: editingPkg.summary || '',
+            terms_and_conditions: editingPkg.terms_and_conditions || '',
+            is_active: editingPkg.is_active !== false,
+          },
+        });
+        setFeedback({ type: 'success', text: `Package "${editingPkg.name}" created.` });
+      } else if (editingPkg.id) {
+        await apiRequest(`/api/admin/packages/${editingPkg.id}`, {
+          method: 'PATCH',
+          requireAuth: true,
+          body: {
+            name: editingPkg.name,
+            price: Number(editingPkg.price),
+            duration_days: Number(editingPkg.duration_days),
+            daily_return_rate: Number(editingPkg.daily_return_rate ?? 30),
+            risk_level: editingPkg.risk_level,
+            summary: editingPkg.summary,
+            terms_and_conditions: editingPkg.terms_and_conditions,
+            is_active: editingPkg.is_active,
+          },
+        });
+        setFeedback({ type: 'success', text: `Package "${editingPkg.name}" updated.` });
+      }
+      setEditingPkg(null);
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to save package.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleSaveInstruction = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editingInstruction) return;
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      await apiRequest(`/api/admin/payment-instructions/${editingInstruction.method}`, {
+        method: 'PUT',
+        requireAuth: true,
+        body: {
+          account_number: editingInstruction.account_number,
+          account_type: editingInstruction.account_type,
+          instructions: editingInstruction.instructions,
+          min_deposit: Number(editingInstruction.min_deposit),
+          max_deposit: Number(editingInstruction.max_deposit),
+          is_active: editingInstruction.is_active,
+        },
+      });
+      setFeedback({
+        type: 'success',
+        text: `${editingInstruction.method} payment instructions saved.`,
+      });
+      setEditingInstruction(null);
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to save payment instructions.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const tabs: { id: AdminTab; label: string; count?: number; icon: typeof ArrowDownLeft }[] = [
+    { id: 'deposits', label: 'Deposits', count: pendingDeposits.length, icon: ArrowDownLeft },
+    { id: 'withdrawals', label: 'Withdrawals', count: pendingWithdrawals.length, icon: ArrowUpRight },
+    { id: 'members', label: 'Members', count: members.length, icon: Users },
+    { id: 'packages', label: 'Packages', icon: Package },
+    { id: 'allocations', label: 'Allocations', count: data.purchases.length, icon: CheckCircle2 },
+    { id: 'instructions', label: 'Payment Setup', icon: CreditCard },
+    { id: 'ledger', label: 'All Transactions', icon: History },
+  ];
+
+  return (
+    <div className="min-h-[calc(100vh-4rem)] bg-slate-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+        {/* Admin Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <div className="text-xs font-semibold text-blue-700">SMART INVEST · Administrator Console</div>
+            <h1 className="font-display text-2xl font-bold text-slate-900 mt-0.5">
+              Operations, Verification & Ledger Governance
+            </h1>
+          </div>
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            className="inline-flex items-center gap-2 self-start px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Refresh Overview</span>
+          </button>
+        </div>
+
+        {/* Demo Mode & Legal Readiness Notice */}
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900">
+          <span className="font-semibold">Demo Transactions Only:</span> All approvals, package allocations, and ledger entries currently operate in verification demonstration mode. Do not enable live real-money operations until legal, regulatory, and payment-provider requirements are verified.
+        </div>
+
+        {/* One-Click Database Setup Banner when tables (e.g. payment_instructions) are missing */}
+        {data.schemaPending && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-5 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-sm font-bold text-red-900">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>Supabase Database Tables Pending (`payment_instructions`, `investment_packages`, etc.)</span>
+                </div>
+                <p className="text-xs text-red-800 leading-relaxed">
+                  Saving bKash, Nagad, or Rocket numbers requires running <span className="font-mono">supabase/schema.sql</span> once in your Supabase Dashboard → <span className="font-semibold">SQL Editor</span>. Download or copy the SQL below, paste or import it in Supabase SQL Editor &amp; click <span className="font-semibold">Run</span>, then click <span className="font-semibold">Refresh Overview</span>.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={sqlLoading}
+                  onClick={async () => {
+                    setSqlLoading(true);
+                    try {
+                      const res = await apiRequest<{ sql: string }>('/api/admin/schema-sql', {
+                        requireAuth: true,
+                      });
+                      setSqlText(res.sql);
+                      const blob = new Blob([res.sql], { type: 'application/sql;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = 'smart-invest-schema.sql';
+                      document.body.appendChild(a);
+                      a.click();
+                      a.remove();
+                      URL.revokeObjectURL(url);
+                    } catch (err) {
+                      setFeedback({
+                        type: 'error',
+                        text: err instanceof Error ? err.message : 'Unable to download setup SQL.',
+                      });
+                    } finally {
+                      setSqlLoading(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-red-700 hover:bg-red-800 text-white text-xs font-semibold rounded-lg cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{sqlLoading ? 'Preparing...' : 'Download .sql File'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={sqlLoading}
+                  onClick={async () => {
+                    setSqlLoading(true);
+                    try {
+                      const res = await apiRequest<{ sql: string }>('/api/admin/schema-sql', {
+                        requireAuth: true,
+                      });
+                      setSqlText(res.sql);
+                      let copied = false;
+                      try {
+                        await navigator.clipboard.writeText(res.sql);
+                        copied = true;
+                      } catch {
+                        const tmp = document.createElement('textarea');
+                        tmp.value = res.sql;
+                        tmp.style.position = 'fixed';
+                        tmp.style.opacity = '0';
+                        document.body.appendChild(tmp);
+                        tmp.focus();
+                        tmp.select();
+                        try {
+                          copied = document.execCommand('copy');
+                        } catch {
+                          copied = false;
+                        }
+                        tmp.remove();
+                      }
+                      if (copied) {
+                        setSqlCopied(true);
+                        setTimeout(() => setSqlCopied(false), 2500);
+                      }
+                    } catch (err) {
+                      setFeedback({
+                        type: 'error',
+                        text: err instanceof Error ? err.message : 'Unable to load setup SQL.',
+                      });
+                    } finally {
+                      setSqlLoading(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white border border-red-200 hover:bg-red-100 text-red-800 text-xs font-semibold rounded-lg cursor-pointer"
+                >
+                  {sqlCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{sqlCopied ? 'Copied Setup SQL!' : 'Copy Setup SQL'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (sqlText) {
+                      setSqlText(null);
+                      return;
+                    }
+                    setSqlLoading(true);
+                    try {
+                      const res = await apiRequest<{ sql: string }>('/api/admin/schema-sql', {
+                        requireAuth: true,
+                      });
+                      setSqlText(res.sql);
+                    } catch {
+                      // Handled silently
+                    } finally {
+                      setSqlLoading(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white border border-red-200 hover:bg-red-100 text-red-800 text-xs font-semibold rounded-lg cursor-pointer"
+                >
+                  <FileCode2 className="w-3.5 h-3.5" />
+                  <span>{sqlText ? 'Hide SQL' : 'View SQL'}</span>
+                </button>
+              </div>
+            </div>
+            {sqlText && (
+              <div className="space-y-2 pt-2">
+                <div className="text-xs font-medium text-red-900">
+                  Select All &amp; Copy below → Paste in Supabase SQL Editor → Click Run:
+                </div>
+                <textarea
+                  readOnly
+                  value={sqlText}
+                  rows={8}
+                  translate="no"
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="notranslate w-full p-3 text-xs font-mono bg-white border border-red-200 rounded-lg text-slate-800"
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* KPI Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <div className="text-xs font-medium text-slate-500">Total Registered Members</div>
+            <div className="font-mono tabular-nums text-2xl font-bold text-slate-900 mt-1.5">
+              {members.length}
+            </div>
+            <div className="text-xs text-slate-500 mt-1">{activeMembers} active accounts</div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <div className="text-xs font-medium text-slate-500">Pending Deposit Requests</div>
+            <div className="font-mono tabular-nums text-2xl font-bold text-amber-700 mt-1.5">
+              {pendingDeposits.length}
+            </div>
+            <div className="text-xs text-slate-500 mt-1">{deposits.length} total requests</div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <div className="text-xs font-medium text-slate-500">Pending Withdrawal Requests</div>
+            <div className="font-mono tabular-nums text-2xl font-bold text-amber-700 mt-1.5">
+              {pendingWithdrawals.length}
+            </div>
+            <div className="text-xs text-slate-500 mt-1">{withdrawals.length} total payouts</div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <div className="text-xs font-medium text-slate-500">Total Verified Member Balances</div>
+            <div className="font-mono tabular-nums text-2xl font-bold text-blue-700 mt-1.5">
+              {formatCurrency(totalVerifiedBalances)}
+            </div>
+            <div className="text-xs text-slate-500 mt-1">{ledger.length} ledger records</div>
+          </div>
+        </div>
+
+        {feedback && (
+          <div
+            className={`rounded-xl px-4 py-3 text-xs flex items-center justify-between gap-3 border ${
+              feedback.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-red-50 border-red-200 text-red-900'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {feedback.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0" />
+              )}
+              <span>{feedback.text}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFeedback(null)}
+              className="text-slate-500 hover:text-slate-800 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Admin Section Tabs */}
+        <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-200/70 rounded-xl">
+          {tabs.map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                  active ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-700 hover:text-slate-900'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span>{item.label}</span>
+                {typeof item.count === 'number' && (
+                  <span className="font-mono tabular-nums text-slate-500">({item.count})</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* TAB: DEPOSITS */}
+        {tab === 'deposits' && (
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <h2 className="font-display text-base font-bold text-slate-900">Deposit Verification Queue</h2>
+              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg self-start">
+                {(['pending', 'approved', 'rejected', 'all'] as const).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setStatusFilter(s)}
+                    className={`px-3 py-1 text-xs font-medium rounded-md capitalize cursor-pointer ${
+                      statusFilter === s ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {filteredDeposits.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-600">
+                No {statusFilter === 'all' ? '' : statusFilter} deposit requests found.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+                      <th className="py-3 px-4 font-medium">Member</th>
+                      <th className="py-3 px-4 font-medium">Method</th>
+                      <th className="py-3 px-4 font-medium">Sender</th>
+                      <th className="py-3 px-4 font-medium">Transaction ID</th>
+                      <th className="py-3 px-4 font-medium text-right">Amount</th>
+                      <th className="py-3 px-4 font-medium">Submitted</th>
+                      <th className="py-3 px-4 font-medium">Status</th>
+                      <th className="py-3 px-4 font-medium text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredDeposits.map((d) => {
+                      const member = memberLookup.get(d.user_id);
+                      return (
+                        <tr key={d.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-4">
+                            <div className="font-medium text-slate-900">{member?.full_name || 'Member'}</div>
+                            <div className="text-xs text-slate-500">{member?.email || d.user_id}</div>
+                          </td>
+                          <td className="py-3 px-4 font-medium text-slate-900">{d.payment_method}</td>
+                          <td className="py-3 px-4 font-mono text-xs text-slate-700">{d.sender_account}</td>
+                          <td className="py-3 px-4 font-mono text-xs font-semibold text-slate-900">{d.transaction_id}</td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-slate-900">
+                            {formatCurrency(d.amount)}
+                          </td>
+                          <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
+                            {formatDateTime(d.created_at)}
+                          </td>
+                          <td className="py-3 px-4">
+                            <StatusLabel status={d.status} />
+                          </td>
+                          <td className="py-3 px-4 text-right whitespace-nowrap">
+                            {d.status === 'pending' ? (
+                              <div className="inline-flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={actionBusy}
+                                  onClick={() => {
+                                    setReviewNote('');
+                                    setReviewPrompt({
+                                      kind: 'deposit',
+                                      action: 'approve',
+                                      id: d.id,
+                                      label: `${formatCurrency(d.amount)} via ${d.payment_method} (${d.transaction_id})`,
+                                    });
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-md cursor-pointer"
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={actionBusy}
+                                  onClick={() => {
+                                    setReviewNote('');
+                                    setReviewPrompt({
+                                      kind: 'deposit',
+                                      action: 'reject',
+                                      id: d.id,
+                                      label: `${formatCurrency(d.amount)} via ${d.payment_method} (${d.transaction_id})`,
+                                    });
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 hover:bg-red-100 rounded-md cursor-pointer"
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-500">{d.admin_note || 'Reviewed'}</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* TAB: WITHDRAWALS */}
+        {tab === 'withdrawals' && (
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <h2 className="font-display text-base font-bold text-slate-900">Withdrawal Payout Queue</h2>
+              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg self-start">
+                {(['pending', 'approved', 'rejected', 'all'] as const).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setStatusFilter(s)}
+                    className={`px-3 py-1 text-xs font-medium rounded-md capitalize cursor-pointer ${
+                      statusFilter === s ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {filteredWithdrawals.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-600">
+                No {statusFilter === 'all' ? '' : statusFilter} withdrawal requests found.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+                      <th className="py-3 px-4 font-medium">Member</th>
+                      <th className="py-3 px-4 font-medium">Method</th>
+                      <th className="py-3 px-4 font-medium">Recipient Account</th>
+                      <th className="py-3 px-4 font-medium text-right">Amount</th>
+                      <th className="py-3 px-4 font-medium">Requested</th>
+                      <th className="py-3 px-4 font-medium">Status</th>
+                      <th className="py-3 px-4 font-medium text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredWithdrawals.map((w) => {
+                      const member = memberLookup.get(w.user_id);
+                      return (
+                        <tr key={w.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-4">
+                            <div className="font-medium text-slate-900">{member?.full_name || 'Member'}</div>
+                            <div className="text-xs text-slate-500">{member?.email || w.user_id}</div>
+                          </td>
+                          <td className="py-3 px-4 font-medium text-slate-900">{w.payment_method}</td>
+                          <td className="py-3 px-4 font-mono text-xs font-semibold text-slate-900">{w.account_number}</td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-slate-900">
+                            {formatCurrency(w.amount)}
+                          </td>
+                          <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
+                            {formatDateTime(w.created_at)}
+                          </td>
+                          <td className="py-3 px-4">
+                            <StatusLabel status={w.status} />
+                          </td>
+                          <td className="py-3 px-4 text-right whitespace-nowrap">
+                            {w.status === 'pending' ? (
+                              <div className="inline-flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={actionBusy}
+                                  onClick={() => {
+                                    setReviewNote('');
+                                    setReviewPrompt({
+                                      kind: 'withdrawal',
+                                      action: 'approve',
+                                      id: w.id,
+                                      label: `${formatCurrency(w.amount)} to ${w.payment_method} (${w.account_number})`,
+                                    });
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-md cursor-pointer"
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={actionBusy}
+                                  onClick={() => {
+                                    setReviewNote('');
+                                    setReviewPrompt({
+                                      kind: 'withdrawal',
+                                      action: 'reject',
+                                      id: w.id,
+                                      label: `${formatCurrency(w.amount)} to ${w.payment_method} (${w.account_number})`,
+                                    });
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 hover:bg-red-100 rounded-md cursor-pointer"
+                                >
+                                  Reject & Refund
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-500">{w.admin_note || 'Reviewed'}</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* TAB: MEMBERS */}
+        {tab === 'members' && (
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <h2 className="font-display text-base font-bold text-slate-900">Member Directory</h2>
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="search"
+                  value={memberSearch}
+                  onChange={(e) => setMemberSearch(e.target.value)}
+                  placeholder="Search name, email, or phone..."
+                  className="w-full pl-9 pr-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                />
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+                    <th className="py-3 px-4 font-medium">Member</th>
+                    <th className="py-3 px-4 font-medium">Phone</th>
+                    <th className="py-3 px-4 font-medium">Role</th>
+                    <th className="py-3 px-4 font-medium text-right">Verified Balance</th>
+                    <th className="py-3 px-4 font-medium">Status</th>
+                    <th className="py-3 px-4 font-medium">Joined</th>
+                    <th className="py-3 px-4 font-medium text-right">Account Control</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredMembers.map((m) => (
+                    <tr key={m.id} className="hover:bg-slate-50">
+                      <td className="py-3 px-4">
+                        <div className="font-medium text-slate-900">{m.full_name || '—'}</div>
+                        <div className="text-xs text-slate-500">{m.email}</div>
+                      </td>
+                      <td className="py-3 px-4 font-mono text-xs text-slate-700">{m.phone || '—'}</td>
+                      <td className="py-3 px-4">
+                        <StatusLabel status={m.role} />
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-slate-900">
+                        {formatCurrency(m.available_balance)}
+                      </td>
+                      <td className="py-3 px-4">
+                        <StatusLabel status={m.status} />
+                      </td>
+                      <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
+                        {formatDateTime(m.created_at)}
+                      </td>
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setInspectedMember(m)}
+                            className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md cursor-pointer"
+                          >
+                            Inspect
+                          </button>
+                          {m.id === currentAdmin.id ? (
+                            <span className="text-xs text-slate-400 px-1">Current Admin</span>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={actionBusy}
+                              onClick={() => void handleToggleMemberStatus(m)}
+                              className={`px-3 py-1.5 text-xs font-semibold rounded-md cursor-pointer ${
+                                m.status === 'active'
+                                  ? 'text-red-700 bg-red-50 border border-red-200 hover:bg-red-100'
+                                  : 'text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                            >
+                              {m.status === 'active' ? 'Deactivate' : 'Activate'}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {/* TAB: PACKAGES */}
+        {tab === 'packages' && (
+          <section className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-base font-bold text-slate-900">Manage Investment Packages</h2>
+              <button
+                type="button"
+                onClick={() =>
+                  setEditingPkg({
+                    isNew: true,
+                    name: '',
+                    slug: '',
+                    tier_order: packages.length + 1,
+                    price: 5000,
+                    duration_days: 7,
+                    daily_return_rate: 30,
+                    risk_level: 'Moderate',
+                    summary: '',
+                    terms_and_conditions: '',
+                    is_active: true,
+                  })
+                }
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Package</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {packages.map((pkg) => {
+                const dailyRate = Number(pkg.daily_return_rate ?? 30);
+                const dailyIncome = Math.round(Number(pkg.price) * dailyRate) / 100;
+                return (
+                <div key={pkg.id} className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="text-xs text-slate-500">
+                        Tier 0{pkg.tier_order} · {pkg.risk_level} Risk
+                      </div>
+                      <h3 className="font-display text-lg font-bold text-slate-900">{pkg.name}</h3>
+                    </div>
+                    <StatusLabel status={pkg.is_active ? 'active' : 'deactivated'} />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4 text-sm">
+                    <div>
+                      <span className="text-xs text-slate-500">Price: </span>
+                      <span className="font-mono tabular-nums font-bold text-blue-700">
+                        {formatCurrency(pkg.price)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500">Daily Demo: </span>
+                      <span className="font-mono tabular-nums font-semibold text-emerald-700">
+                        {dailyRate}% (+{formatCurrency(dailyIncome)}/day)
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500">Duration: </span>
+                      <span className="font-mono tabular-nums font-semibold text-slate-900">
+                        {pkg.duration_days} Days
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed">{pkg.summary}</p>
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={actionBusy}
+                      onClick={() => void handleTogglePackageActive(pkg)}
+                      className="px-3.5 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                    >
+                      {pkg.is_active ? 'Deactivate' : 'Activate'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingPkg({ ...pkg, isNew: false })}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer"
+                    >
+                      Edit Package
+                    </button>
+                  </div>
+                </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* TAB: PACKAGE ALLOCATIONS */}
+        {tab === 'allocations' && (
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200">
+              <h2 className="font-display text-base font-bold text-slate-900">Member Package Allocations</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                All purchased investment packages funded by verified member balances.
+              </p>
+            </div>
+            {data.purchases.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-600">
+                No package allocations recorded yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+                      <th className="py-3 px-4 font-medium">Member</th>
+                      <th className="py-3 px-4 font-medium">Package</th>
+                      <th className="py-3 px-4 font-medium text-right">Amount</th>
+                      <th className="py-3 px-4 font-medium text-right">Daily Demo</th>
+                      <th className="py-3 px-4 font-medium text-right">Credited</th>
+                      <th className="py-3 px-4 font-medium">Start</th>
+                      <th className="py-3 px-4 font-medium">Maturity</th>
+                      <th className="py-3 px-4 font-medium">Status</th>
+                      <th className="py-3 px-4 font-medium text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {data.purchases.map((p) => {
+                      const owner = memberLookup.get(p.user_id);
+                      const rate = Number(p.daily_return_rate ?? 30);
+                      const dailyAmt = Number(
+                        p.daily_reward_amount || Math.round(Number(p.purchase_price) * rate) / 100
+                      );
+                      return (
+                        <tr key={p.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-4 text-xs">
+                            <div className="font-medium text-slate-900">{owner?.full_name || 'Member'}</div>
+                            <div className="text-slate-500">{owner?.email || p.user_id}</div>
+                          </td>
+                          <td className="py-3 px-4 font-medium text-slate-900">{p.package_name}</td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold">
+                            {formatCurrency(p.purchase_price)}
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums text-emerald-700">
+                            +{formatCurrency(dailyAmt)} ({rate}%)
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums text-xs text-slate-600">
+                            {Number(p.days_credited ?? 0)}/{p.duration_days}d · {formatCurrency(Number(p.total_credited ?? 0))}
+                          </td>
+                          <td className="py-3 px-4 text-xs text-slate-600">{formatDate(p.starts_at)}</td>
+                          <td className="py-3 px-4 text-xs text-slate-600">{formatDate(p.matures_at)}</td>
+                          <td className="py-3 px-4">
+                            <StatusLabel status={p.status} />
+                          </td>
+                          <td className="py-3 px-4 text-right whitespace-nowrap">
+                            {p.status === 'active' ? (
+                              <button
+                                type="button"
+                                disabled={actionBusy}
+                                onClick={() => void handleMarkPurchaseStatus(p.id, 'completed')}
+                                className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md cursor-pointer"
+                              >
+                                Mark Completed
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-500 capitalize">{p.status}</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* TAB: PAYMENT INSTRUCTIONS */}
+        {tab === 'instructions' && (
+          <section className="space-y-4">
+            <div>
+              <h2 className="font-display text-base font-bold text-slate-900">Manage Deposit Payment Instructions</h2>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Configure active bKash, Nagad, and Rocket account numbers and deposit limits displayed to members.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              {(['bKash', 'Nagad', 'Rocket'] as PaymentMethod[]).map((method) => {
+                const inst = paymentInstructions.find((item) => item.method === method) || {
+                  id: '',
+                  method,
+                  account_number: 'Not configured',
+                  account_type: 'Merchant' as const,
+                  instructions: '',
+                  min_deposit: 500,
+                  max_deposit: 500000,
+                  is_active: true,
+                };
+                return (
+                  <div key={method} className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between space-y-4">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-display text-lg font-bold text-slate-900">{method}</h3>
+                        <StatusLabel status={inst.is_active ? 'active' : 'deactivated'} />
+                      </div>
+                      <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                        <div className="text-xs text-slate-500">{inst.account_type} Account</div>
+                        <div className="font-mono text-sm font-bold text-slate-900 mt-0.5">
+                          {inst.account_number}
+                        </div>
+                      </div>
+                      <div className="text-xs text-slate-600">
+                        Limits:{' '}
+                        <span className="font-mono tabular-nums font-medium text-slate-900">
+                          {formatCurrency(inst.min_deposit)} – {formatCurrency(inst.max_deposit)}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed">{inst.instructions || 'No instructions set.'}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditingInstruction({
+                          ...inst,
+                          account_number:
+                            inst.account_number === 'Configure in Admin Panel' ||
+                            inst.account_number === 'Not configured'
+                              ? ''
+                              : inst.account_number,
+                          instructions:
+                            inst.instructions ||
+                            `Send Money or Payment to this ${method} ${inst.account_type} number, then submit your Sender Number and Transaction ID (TrxID) for admin verification.`,
+                        })
+                      }
+                      className="w-full py-2 px-4 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer"
+                    >
+                      Edit {method} Settings
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* TAB: ALL TRANSACTIONS LEDGER */}
+        {tab === 'ledger' && (
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900">Global Immutable Financial Ledger</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Complete system-wide audit trail across all members.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  aria-label="Filter ledger by entry type"
+                  value={ledgerTypeFilter}
+                  onChange={(e) => setLedgerTypeFilter(e.target.value)}
+                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
+                >
+                  <option value="all">All Entry Types</option>
+                  <option value="deposit_credit">Deposit Credit</option>
+                  <option value="withdrawal_hold">Withdrawal Hold</option>
+                  <option value="withdrawal_refund">Withdrawal Refund</option>
+                  <option value="package_purchase">Package Purchase</option>
+                  <option value="package_reward">Package Daily Reward</option>
+                </select>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="search"
+                    value={ledgerSearch}
+                    onChange={(e) => setLedgerSearch(e.target.value)}
+                    placeholder="Filter member or description..."
+                    className="pl-8 pr-3 py-2 text-xs border border-slate-300 rounded-lg"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    exportRowsToCsv(
+                      'smart-invest-admin-ledger.csv',
+                      ['Timestamp', 'Member Email', 'Entry Type', 'Direction', 'Amount', 'Balance Before', 'Balance After', 'Description'],
+                      filteredLedger.map((entry) => [
+                        entry.created_at,
+                        memberLookup.get(entry.user_id)?.email || entry.user_id,
+                        entry.entry_type,
+                        entry.direction,
+                        entry.amount,
+                        entry.balance_before,
+                        entry.balance_after,
+                        entry.description,
+                      ])
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export CSV</span>
+                </button>
+              </div>
+            </div>
+            {filteredLedger.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-600">No ledger entries match your filter.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+                      <th className="py-3 px-4 font-medium">Timestamp</th>
+                      <th className="py-3 px-4 font-medium">Member</th>
+                      <th className="py-3 px-4 font-medium">Description</th>
+                      <th className="py-3 px-4 font-medium">Direction</th>
+                      <th className="py-3 px-4 font-medium text-right">Amount</th>
+                      <th className="py-3 px-4 font-medium text-right">Before</th>
+                      <th className="py-3 px-4 font-medium text-right">After</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredLedger.map((entry) => {
+                      const member = memberLookup.get(entry.user_id);
+                      return (
+                        <tr key={entry.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
+                            {formatDateTime(entry.created_at)}
+                          </td>
+                          <td className="py-3 px-4 text-xs">
+                            <div className="font-medium text-slate-900">{member?.full_name || 'Member'}</div>
+                            <div className="text-slate-500">{member?.email || entry.user_id}</div>
+                          </td>
+                          <td className="py-3 px-4 text-slate-800">{entry.description}</td>
+                          <td className="py-3 px-4">
+                            <StatusLabel status={entry.direction} />
+                          </td>
+                          <td
+                            className={`py-3 px-4 text-right font-mono tabular-nums font-medium ${
+                              entry.direction === 'credit' ? 'text-emerald-700' : 'text-red-700'
+                            }`}
+                          >
+                            {entry.direction === 'credit' ? '+' : '-'}
+                            {formatCurrency(entry.amount)}
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums text-xs text-slate-600">
+                            {formatCurrency(entry.balance_before)}
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums text-xs font-semibold text-slate-900">
+                            {formatCurrency(entry.balance_after)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+
+      {/* Review Deposit / Withdrawal Confirmation Modal */}
+      {reviewPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true">
+          <form
+            onSubmit={handleConfirmReview}
+            className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-6 space-y-4 shadow-xl"
+          >
+            <h3 className="font-display text-lg font-bold text-slate-900 capitalize">
+              {reviewPrompt.action} {reviewPrompt.kind} Request
+            </h3>
+            <p className="text-xs text-slate-600 leading-relaxed">{reviewPrompt.label}</p>
+            <div>
+              <label htmlFor="admin-review-note" className="block text-xs font-medium text-slate-700 mb-1.5">
+                Administrator Note (Optional)
+              </label>
+              <textarea
+                id="admin-review-note"
+                rows={3}
+                value={reviewNote}
+                onChange={(e) => setReviewNote(e.target.value)}
+                placeholder={
+                  reviewPrompt.action === 'approve'
+                    ? 'e.g. Verified against merchant statement.'
+                    : 'e.g. Transaction ID not found in settlement log.'
+                }
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setReviewPrompt(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={actionBusy}
+                className={`px-4 py-2 text-xs font-semibold text-white rounded-lg cursor-pointer ${
+                  reviewPrompt.action === 'approve'
+                    ? 'bg-emerald-700 hover:bg-emerald-800'
+                    : 'bg-red-700 hover:bg-red-800'
+                }`}
+              >
+                {actionBusy ? 'Processing...' : `Confirm ${reviewPrompt.action}`}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Package Edit / Create Modal */}
+      {editingPkg && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true">
+          <form
+            onSubmit={handleSavePackage}
+            className="bg-white border border-slate-200 rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 space-y-4 shadow-xl"
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <h3 className="font-display text-lg font-bold text-slate-900">
+                {editingPkg.isNew ? 'Create Investment Package' : `Edit ${editingPkg.name}`}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingPkg(null)}
+                className="p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Package Name</label>
+                <input
+                  type="text"
+                  required
+                  value={editingPkg.name || ''}
+                  onChange={(e) => setEditingPkg({ ...editingPkg, name: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                />
+              </div>
+              {editingPkg.isNew && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Slug</label>
+                  <input
+                    type="text"
+                    required
+                    value={editingPkg.slug || ''}
+                    onChange={(e) => setEditingPkg({ ...editingPkg, slug: e.target.value })}
+                    placeholder="e.g. platinum"
+                    className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Price (BDT)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  required
+                  value={editingPkg.price ?? ''}
+                  onChange={(e) => setEditingPkg({ ...editingPkg, price: Number(e.target.value) })}
+                  className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Duration (Days)</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={editingPkg.duration_days ?? ''}
+                  onChange={(e) => setEditingPkg({ ...editingPkg, duration_days: Number(e.target.value) })}
+                  className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Daily Demo Rate (%)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  required
+                  value={editingPkg.daily_return_rate ?? 30}
+                  onChange={(e) => setEditingPkg({ ...editingPkg, daily_return_rate: Number(e.target.value) })}
+                  className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Risk Level</label>
+                <select
+                  value={editingPkg.risk_level || 'Moderate'}
+                  onChange={(e) =>
+                    setEditingPkg({
+                      ...editingPkg,
+                      risk_level: e.target.value as InvestmentPackage['risk_level'],
+                    })
+                  }
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                >
+                  <option value="Low-Moderate">Low-Moderate</option>
+                  <option value="Moderate">Moderate</option>
+                  <option value="Moderate-High">Moderate-High</option>
+                  <option value="High">High</option>
+                </select>
+              </div>
+              <div className="flex items-end pb-2">
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editingPkg.is_active !== false}
+                    onChange={(e) => setEditingPkg({ ...editingPkg, is_active: e.target.checked })}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-700"
+                  />
+                  <span>Active for purchase</span>
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Summary</label>
+              <textarea
+                rows={2}
+                required
+                value={editingPkg.summary || ''}
+                onChange={(e) => setEditingPkg({ ...editingPkg, summary: e.target.value })}
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Terms and Conditions</label>
+              <textarea
+                rows={5}
+                required
+                value={editingPkg.terms_and_conditions || ''}
+                onChange={(e) => setEditingPkg({ ...editingPkg, terms_and_conditions: e.target.value })}
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+              />
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingPkg(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={actionBusy}
+                className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
+              >
+                {actionBusy ? 'Saving...' : 'Save Package'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Payment Instruction Edit Modal */}
+      {editingInstruction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true">
+          <form
+            onSubmit={handleSaveInstruction}
+            className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-6 space-y-4 shadow-xl"
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <h3 className="font-display text-lg font-bold text-slate-900">
+                Configure {editingInstruction.method} Instructions
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingInstruction(null)}
+                className="p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Account Number</label>
+              <input
+                type="text"
+                required
+                placeholder="01XXXXXXXXX"
+                value={editingInstruction.account_number}
+                onChange={(e) =>
+                  setEditingInstruction({ ...editingInstruction, account_number: e.target.value })
+                }
+                className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+              />
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Account Type</label>
+                <select
+                  value={editingInstruction.account_type}
+                  onChange={(e) =>
+                    setEditingInstruction({
+                      ...editingInstruction,
+                      account_type: e.target.value as PaymentInstruction['account_type'],
+                    })
+                  }
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
+                >
+                  <option value="Merchant">Merchant</option>
+                  <option value="Agent">Agent</option>
+                  <option value="Personal">Personal</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Min Deposit</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={editingInstruction.min_deposit}
+                  onChange={(e) =>
+                    setEditingInstruction({ ...editingInstruction, min_deposit: Number(e.target.value) })
+                  }
+                  className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Max Deposit</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={editingInstruction.max_deposit}
+                  onChange={(e) =>
+                    setEditingInstruction({ ...editingInstruction, max_deposit: Number(e.target.value) })
+                  }
+                  className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Instructions for Members</label>
+              <textarea
+                rows={4}
+                required
+                value={editingInstruction.instructions}
+                onChange={(e) =>
+                  setEditingInstruction({ ...editingInstruction, instructions: e.target.value })
+                }
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+              />
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editingInstruction.is_active}
+                onChange={(e) =>
+                  setEditingInstruction({ ...editingInstruction, is_active: e.target.checked })
+                }
+                className="w-4 h-4 rounded border-slate-300 text-blue-700"
+              />
+              <span>Enable {editingInstruction.method} deposits</span>
+            </label>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingInstruction(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={actionBusy}
+                className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
+              >
+                {actionBusy ? 'Saving...' : 'Save Settings'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Member Detail Inspection Modal */}
+      {inspectedMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true">
+          <div className="bg-white border border-slate-200 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-5 shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-3">
+              <div>
+                <div className="text-xs text-blue-700 font-semibold">Member Account Inspection</div>
+                <h3 className="font-display text-lg font-bold text-slate-900 mt-0.5">
+                  {inspectedMember.full_name || inspectedMember.email}
+                </h3>
+                <div className="text-xs text-slate-500">
+                  {inspectedMember.email} · {inspectedMember.phone || 'No phone'} · ID:{' '}
+                  <span className="font-mono">{inspectedMember.id}</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInspectedMember(null)}
+                aria-label="Close member details"
+                className="p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-slate-50 border border-slate-200 rounded-lg p-4">
+              <div>
+                <div className="text-xs text-slate-500">Verified Balance</div>
+                <div className="font-mono tabular-nums text-base font-bold text-blue-700 mt-0.5">
+                  {formatCurrency(inspectedMember.available_balance)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500">Account Status</div>
+                <div className="mt-1">
+                  <StatusLabel status={inspectedMember.status} />
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500">Access Role</div>
+                <div className="mt-1">
+                  <StatusLabel status={inspectedMember.role} />
+                </div>
+              </div>
+            </div>
+
+            {(() => {
+              const mDeposits = deposits.filter((d) => d.user_id === inspectedMember.id);
+              const mWithdrawals = withdrawals.filter((w) => w.user_id === inspectedMember.id);
+              const mPurchases = data.purchases.filter((p) => p.user_id === inspectedMember.id);
+              const mLedger = ledger.filter((l) => l.user_id === inspectedMember.id);
+              return (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-3 text-xs">
+                    <div className="border border-slate-200 rounded-lg p-3">
+                      <div className="text-slate-500">Deposits</div>
+                      <div className="font-mono tabular-nums text-sm font-semibold text-slate-900 mt-0.5">
+                        {mDeposits.length}
+                      </div>
+                    </div>
+                    <div className="border border-slate-200 rounded-lg p-3">
+                      <div className="text-slate-500">Withdrawals</div>
+                      <div className="font-mono tabular-nums text-sm font-semibold text-slate-900 mt-0.5">
+                        {mWithdrawals.length}
+                      </div>
+                    </div>
+                    <div className="border border-slate-200 rounded-lg p-3">
+                      <div className="text-slate-500">Packages</div>
+                      <div className="font-mono tabular-nums text-sm font-semibold text-slate-900 mt-0.5">
+                        {mPurchases.length}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-xs font-semibold text-slate-800 mb-2">Recent Member Ledger</h4>
+                    {mLedger.length === 0 ? (
+                      <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                        No ledger entries for this member.
+                      </p>
+                    ) : (
+                      <div className="border border-slate-200 rounded-lg overflow-hidden">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
+                              <th className="py-2 px-3 font-medium">Date</th>
+                              <th className="py-2 px-3 font-medium">Description</th>
+                              <th className="py-2 px-3 font-medium text-right">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {mLedger.slice(0, 8).map((entry) => (
+                              <tr key={entry.id}>
+                                <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
+                                  {formatDateTime(entry.created_at)}
+                                </td>
+                                <td className="py-2 px-3 text-slate-800">{entry.description}</td>
+                                <td
+                                  className={`py-2 px-3 text-right font-mono tabular-nums font-medium ${
+                                    entry.direction === 'credit' ? 'text-emerald-700' : 'text-red-700'
+                                  }`}
+                                >
+                                  {entry.direction === 'credit' ? '+' : '-'}
+                                  {formatCurrency(entry.amount)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              {inspectedMember.id !== currentAdmin.id ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={actionBusy}
+                    onClick={() => void handleToggleMemberStatus(inspectedMember)}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg cursor-pointer ${
+                      inspectedMember.status === 'active'
+                        ? 'text-red-700 bg-red-50 border border-red-200 hover:bg-red-100'
+                        : 'text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100'
+                    }`}
+                  >
+                    {inspectedMember.status === 'active' ? 'Deactivate Account' : 'Activate Account'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={actionBusy}
+                    onClick={() => void handleToggleMemberRole(inspectedMember)}
+                    className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                  >
+                    {inspectedMember.role === 'admin' ? 'Demote to Member' : 'Promote to Admin'}
+                  </button>
+                </div>
+              ) : (
+                <span className="text-xs text-slate-500">Active administrator session</span>
+              )}
+              <button
+                type="button"
+                onClick={() => setInspectedMember(null)}
+                className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

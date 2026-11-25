@@ -1,0 +1,6 @@
+{
+  "name": "SMART INVEST",
+  "description": "Modern investment package management platform with verified bKash, Nagad, and Rocket deposits, withdrawal governance, and immutable ledger tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
