@@ -58,6 +58,8 @@ interface ProfileRow {
   role: 'member' | 'admin';
   status: 'active' | 'deactivated';
   available_balance: number;
+  referral_code: string;
+  referred_by: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -105,6 +107,19 @@ function isMissingColumnOrConstraintError(error: { code?: string | null } | null
   return error.code === '42703' || error.code === 'PGRST204' || error.code === '23514';
 }
 
+function deriveReferralCode(userId: string): string {
+  return `SI${userId.replace(/-/g, '').slice(0, 6).toUpperCase()}`;
+}
+
+function maskEmail(email: string): string {
+  const parts = email.split('@');
+  if (parts.length !== 2) return 'Member';
+  const local = parts[0];
+  const domain = parts[1];
+  const head = local.slice(0, Math.min(2, local.length));
+  return `${head}***@${domain}`;
+}
+
 function normalizeProfileRow(
   raw: Record<string, unknown>,
   authUser: { id: string; email?: string }
@@ -113,15 +128,19 @@ function normalizeProfileRow(
   const rawStatus = typeof raw.status === 'string' ? raw.status.toLowerCase() : 'active';
   const rawBalance = raw.available_balance ?? raw.balance ?? 0;
   const parsedBalance = Number(rawBalance);
+  const id = typeof raw.id === 'string' ? raw.id : authUser.id;
+  const rawCode = typeof raw.referral_code === 'string' ? raw.referral_code.trim().toUpperCase() : '';
 
   return {
-    id: typeof raw.id === 'string' ? raw.id : authUser.id,
+    id,
     email: typeof raw.email === 'string' && raw.email ? raw.email : (authUser.email || '').toLowerCase(),
     full_name: typeof raw.full_name === 'string' ? raw.full_name : '',
     phone: typeof raw.phone === 'string' ? raw.phone : '',
     role: rawRole === 'admin' ? 'admin' : 'member',
     status: rawStatus === 'deactivated' ? 'deactivated' : 'active',
     available_balance: Number.isFinite(parsedBalance) && parsedBalance >= 0 ? parsedBalance : 0,
+    referral_code: rawCode || deriveReferralCode(id),
+    referred_by: typeof raw.referred_by === 'string' ? raw.referred_by : null,
     created_at: typeof raw.created_at === 'string' ? raw.created_at : new Date().toISOString(),
     updated_at:
       typeof raw.updated_at === 'string'
@@ -170,6 +189,21 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
     const normalizedEmail = (authUser.email || '').toLowerCase();
     const fullName = cleanString(meta.full_name, 120);
     const phone = cleanString(meta.phone, 32);
+    const referralInput = cleanString(meta.referral_code, 32).toUpperCase();
+    const newCode = deriveReferralCode(authUser.id);
+
+    let referrerId: string | null = null;
+    if (referralInput) {
+      const { data: referrer } = await supabaseAdmin
+        .from('profiles')
+        .select('id, status')
+        .ilike('referral_code', referralInput)
+        .neq('id', authUser.id)
+        .maybeSingle<{ id: string; status: string }>();
+      if (referrer && referrer.status === 'active') {
+        referrerId = referrer.id;
+      }
+    }
 
     const { data: created, error: createError } = await supabaseAdmin
       .from('profiles')
@@ -180,7 +214,10 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
         phone,
         role: 'member',
         status: 'active',
-        available_balance: 0,
+        available_balance: 100,
+        signup_bonus_credited: true,
+        referral_code: newCode,
+        referred_by: referrerId,
       })
       .select('*')
       .single<Record<string, unknown>>();
@@ -206,7 +243,26 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
       return;
     } else {
       rawProfile = created;
+      await supabaseAdmin.from('financial_ledger').insert({
+        user_id: authUser.id,
+        entry_type: 'signup_bonus',
+        direction: 'credit',
+        amount: 100,
+        balance_before: 0,
+        balance_after: 100,
+        reference_table: 'profiles',
+        reference_id: authUser.id,
+        description: 'Welcome signup bonus (৳100.00)',
+        created_by: authUser.id,
+      });
     }
+  } else if (!rawProfile.referral_code) {
+    const fallbackCode = deriveReferralCode(authUser.id);
+    await supabaseAdmin
+      .from('profiles')
+      .update({ referral_code: fallbackCode })
+      .eq('id', authUser.id);
+    rawProfile.referral_code = fallbackCode;
   }
 
   const profile = normalizeProfileRow(rawProfile, {
@@ -250,18 +306,38 @@ function extractSupabaseProjectRef(supabaseUrl: string): string | null {
 async function ensureDatabaseSchemaOnBoot(): Promise<void> {
   if (!supabaseAdmin || !SUPABASE_URL) return;
 
-  const [pkgCheck, payCheck, rateCheck, rewardCheck] = await Promise.all([
+  const [
+    pkgCheck,
+    payCheck,
+    rateCheck,
+    rewardCheck,
+    refCodeCheck,
+    signupBonusCheck,
+    refCommCheck,
+    supportCfgCheck,
+    supportTktCheck,
+  ] = await Promise.all([
     supabaseAdmin.from('investment_packages').select('id').limit(1),
     supabaseAdmin.from('payment_instructions').select('id').limit(1),
     supabaseAdmin.from('investment_packages').select('daily_return_rate').limit(1),
     supabaseAdmin.from('package_purchases').select('daily_reward_amount').limit(1),
+    supabaseAdmin.from('profiles').select('referral_code').limit(1),
+    supabaseAdmin.from('profiles').select('signup_bonus_credited').limit(1),
+    supabaseAdmin.from('referral_commissions').select('id').limit(1),
+    supabaseAdmin.from('support_settings').select('id').limit(1),
+    supabaseAdmin.from('support_tickets').select('id').limit(1),
   ]);
 
   const missing =
     isMissingTableError(pkgCheck.error) ||
     isMissingTableError(payCheck.error) ||
     isMissingColumnOrConstraintError(rateCheck.error) ||
-    isMissingColumnOrConstraintError(rewardCheck.error);
+    isMissingColumnOrConstraintError(rewardCheck.error) ||
+    isMissingColumnOrConstraintError(refCodeCheck.error) ||
+    isMissingColumnOrConstraintError(signupBonusCheck.error) ||
+    isMissingTableError(refCommCheck.error) ||
+    isMissingTableError(supportCfgCheck.error) ||
+    isMissingTableError(supportTktCheck.error);
   const accessToken = (process.env.SUPABASE_ACCESS_TOKEN || '').trim().replace(/^["']|["']$/g, '');
   const projectRef = extractSupabaseProjectRef(SUPABASE_URL);
 
@@ -371,11 +447,43 @@ async function createApp(): Promise<void> {
     res.json({ packages: data || [], fromDatabase: true });
   });
 
-  // Member bootstrap: profile, packages, payment instructions, deposits, withdrawals, purchases, ledger
+  // Public customer support contact details (configured by Admin)
+  app.get('/api/support', async (_req, res) => {
+    if (!supabaseAdmin) {
+      res.json({ supportSettings: null });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('support_settings')
+      .select('id, support_title, support_hours, whatsapp_number, telegram_link, support_email, notice_text, is_active, updated_at')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (error || !data || !data.is_active) {
+      res.json({ supportSettings: null });
+      return;
+    }
+
+    res.json({ supportSettings: data });
+  });
+
+  // Member bootstrap: profile, packages, payment instructions, deposits, withdrawals, purchases, referrals, support
   app.get('/api/member/bootstrap', requireAuth, async (req: AuthedRequest, res: Response) => {
     const userId = req.profile!.id;
 
-    const [packagesRes, instructionsRes, depositsRes, withdrawalsRes, purchasesRes, ledgerRes] = await Promise.all([
+    const [
+      packagesRes,
+      instructionsRes,
+      depositsRes,
+      withdrawalsRes,
+      purchasesRes,
+      ledgerRes,
+      referralsRes,
+      commissionsRes,
+      supportSettingsRes,
+      supportTicketsRes,
+    ] = await Promise.all([
       supabaseAdmin!
         .from('investment_packages')
         .select('*')
@@ -406,6 +514,26 @@ async function createApp(): Promise<void> {
         .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false }),
+      supabaseAdmin!
+        .from('profiles')
+        .select('id, full_name, email, created_at')
+        .eq('referred_by', userId)
+        .order('created_at', { ascending: false }),
+      supabaseAdmin!
+        .from('referral_commissions')
+        .select('*')
+        .eq('referrer_id', userId)
+        .order('created_at', { ascending: false }),
+      supabaseAdmin!
+        .from('support_settings')
+        .select('id, support_title, support_hours, whatsapp_number, telegram_link, support_email, notice_text, is_active, updated_at')
+        .eq('id', 1)
+        .maybeSingle(),
+      supabaseAdmin!
+        .from('support_tickets')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
     ]);
 
     const queryErrors = [
@@ -423,6 +551,15 @@ async function createApp(): Promise<void> {
       return;
     }
 
+    const referralSummaries = (referralsRes.data || []).map((row: Record<string, unknown>) => ({
+      id: String(row.id || ''),
+      label:
+        typeof row.full_name === 'string' && row.full_name.trim().length > 0
+          ? row.full_name.trim()
+          : maskEmail(String(row.email || '')),
+      joined_at: String(row.created_at || ''),
+    }));
+
     res.json({
       profile: req.profile,
       packages: packagesRes.error ? [] : packagesRes.data || [],
@@ -431,7 +568,61 @@ async function createApp(): Promise<void> {
       withdrawals: withdrawalsRes.error ? [] : withdrawalsRes.data || [],
       purchases: purchasesRes.error ? [] : purchasesRes.data || [],
       ledger: ledgerRes.error ? [] : ledgerRes.data || [],
+      referrals: referralsRes.error ? [] : referralSummaries,
+      referralCommissions: commissionsRes.error ? [] : commissionsRes.data || [],
+      supportSettings: supportSettingsRes.error ? null : supportSettingsRes.data || null,
+      supportTickets: supportTicketsRes.error ? [] : supportTicketsRes.data || [],
     });
+  });
+
+  // Submit a customer support ticket
+  app.post('/api/member/support', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const subject = cleanString(req.body?.subject, 120);
+    const message = cleanString(req.body?.message, 1500);
+
+    if (subject.length < 2) {
+      res.status(400).json({ error: 'Please enter a short support subject.' });
+      return;
+    }
+    if (message.length < 4) {
+      res.status(400).json({ error: 'Please describe your issue or question.' });
+      return;
+    }
+
+    const { count } = await supabaseAdmin!
+      .from('support_tickets')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', req.profile!.id)
+      .eq('status', 'open');
+
+    if ((count ?? 0) >= 5) {
+      res.status(429).json({ error: 'You already have 5 open support requests awaiting reply.' });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin!
+      .from('support_tickets')
+      .insert({
+        user_id: req.profile!.id,
+        subject,
+        message,
+        status: 'open',
+      })
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      if (isMissingTableError(error)) {
+        res.status(503).json({
+          error: 'Support tables are pending schema migration. Refresh or apply supabase/schema.sql.',
+        });
+        return;
+      }
+      res.status(500).json({ error: 'Unable to submit support message.' });
+      return;
+    }
+
+    res.status(201).json({ ticket: data });
   });
 
   // Update member profile (safe fields only)
@@ -671,16 +862,29 @@ async function createApp(): Promise<void> {
   });
 
   app.get('/api/admin/overview', requireAdmin, async (_req: AuthedRequest, res: Response) => {
-    const [profilesRes, depositsRes, withdrawalsRes, packagesRes, instructionsRes, purchasesRes, ledgerRes] =
-      await Promise.all([
-        supabaseAdmin!.from('profiles').select('*').order('created_at', { ascending: false }),
-        supabaseAdmin!.from('deposit_requests').select('*').order('created_at', { ascending: false }),
-        supabaseAdmin!.from('withdrawal_requests').select('*').order('created_at', { ascending: false }),
-        supabaseAdmin!.from('investment_packages').select('*').order('tier_order', { ascending: true }),
-        supabaseAdmin!.from('payment_instructions').select('*').order('method', { ascending: true }),
-        supabaseAdmin!.from('package_purchases').select('*').order('created_at', { ascending: false }),
-        supabaseAdmin!.from('financial_ledger').select('*').order('created_at', { ascending: false }).limit(500),
-      ]);
+    const [
+      profilesRes,
+      depositsRes,
+      withdrawalsRes,
+      packagesRes,
+      instructionsRes,
+      purchasesRes,
+      ledgerRes,
+      commissionsRes,
+      supportSettingsRes,
+      supportTicketsRes,
+    ] = await Promise.all([
+      supabaseAdmin!.from('profiles').select('*').order('created_at', { ascending: false }),
+      supabaseAdmin!.from('deposit_requests').select('*').order('created_at', { ascending: false }),
+      supabaseAdmin!.from('withdrawal_requests').select('*').order('created_at', { ascending: false }),
+      supabaseAdmin!.from('investment_packages').select('*').order('tier_order', { ascending: true }),
+      supabaseAdmin!.from('payment_instructions').select('*').order('method', { ascending: true }),
+      supabaseAdmin!.from('package_purchases').select('*').order('created_at', { ascending: false }),
+      supabaseAdmin!.from('financial_ledger').select('*').order('created_at', { ascending: false }).limit(500),
+      supabaseAdmin!.from('referral_commissions').select('*').order('created_at', { ascending: false }).limit(500),
+      supabaseAdmin!.from('support_settings').select('*').eq('id', 1).maybeSingle(),
+      supabaseAdmin!.from('support_tickets').select('*').order('created_at', { ascending: false }).limit(500),
+    ]);
 
     const queryErrors = [
       profilesRes.error,
@@ -712,6 +916,9 @@ async function createApp(): Promise<void> {
       paymentInstructions: instructionsRes.error ? [] : instructionsRes.data || [],
       purchases: purchasesRes.error ? [] : purchasesRes.data || [],
       ledger: ledgerRes.error ? [] : ledgerRes.data || [],
+      referralCommissions: commissionsRes.error ? [] : commissionsRes.data || [],
+      supportSettings: supportSettingsRes.error ? null : supportSettingsRes.data || null,
+      supportTickets: supportTicketsRes.error ? [] : supportTicketsRes.data || [],
       schemaPending: queryErrors.some((err) => isMissingTableError(err)),
     });
   });
@@ -1094,6 +1301,78 @@ async function createApp(): Promise<void> {
     }
 
     res.json({ instruction: data });
+  });
+
+  app.put('/api/admin/support-settings', requireAdmin, async (req: AuthedRequest, res: Response) => {
+    const supportTitle = cleanString(req.body?.support_title, 100) || 'SMART INVEST Customer Support';
+    const supportHours = cleanString(req.body?.support_hours, 100) || '9:00 AM - 10:00 PM (GMT+6)';
+    const whatsappNumber = cleanString(req.body?.whatsapp_number, 32);
+    const telegramLink = cleanString(req.body?.telegram_link, 160);
+    const supportEmail = cleanString(req.body?.support_email, 120);
+    const noticeText = cleanString(req.body?.notice_text, 600);
+    const isActive = req.body?.is_active !== false;
+
+    const { data, error } = await supabaseAdmin!
+      .from('support_settings')
+      .upsert(
+        {
+          id: 1,
+          support_title: supportTitle,
+          support_hours: supportHours,
+          whatsapp_number: whatsappNumber,
+          telegram_link: telegramLink,
+          support_email: supportEmail,
+          notice_text: noticeText,
+          is_active: isActive,
+          updated_by: req.profile!.id,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      )
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      res.status(400).json({ error: error?.message || 'Unable to save customer support settings.' });
+      return;
+    }
+
+    res.json({ supportSettings: data });
+  });
+
+  app.post('/api/admin/support-tickets/:id/reply', requireAdmin, async (req: AuthedRequest, res: Response) => {
+    const ticketId = req.params.id;
+    if (!UUID_REGEX.test(ticketId)) {
+      res.status(400).json({ error: 'Invalid support ticket ID.' });
+      return;
+    }
+
+    const adminReply = cleanString(req.body?.admin_reply, 2000);
+    const nextStatus = cleanString(req.body?.status, 16) === 'closed' ? 'closed' : 'replied';
+
+    if (adminReply.length < 2 && nextStatus !== 'closed') {
+      res.status(400).json({ error: 'Please write a reply for the member.' });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin!
+      .from('support_tickets')
+      .update({
+        admin_reply: adminReply || 'Marked as closed by support.',
+        status: nextStatus,
+        replied_by: req.profile!.id,
+        replied_at: new Date().toISOString(),
+      })
+      .eq('id', ticketId)
+      .select('*')
+      .single();
+
+    if (error || !data) {
+      res.status(400).json({ error: error?.message || 'Unable to update support ticket.' });
+      return;
+    }
+
+    res.json({ ticket: data });
   });
 
   // Frontend Vite dev middleware or production static serving

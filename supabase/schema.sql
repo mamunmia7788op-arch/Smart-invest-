@@ -17,6 +17,7 @@ create table if not exists public.profiles (
   role text not null default 'member' check (role in ('member', 'admin')),
   status text not null default 'active' check (status in ('active', 'deactivated')),
   available_balance numeric(14, 2) not null default 0.00 check (available_balance >= 0),
+  signup_bonus_credited boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -31,6 +32,9 @@ begin
   alter table public.profiles add column if not exists role text not null default 'member';
   alter table public.profiles add column if not exists status text not null default 'active';
   alter table public.profiles add column if not exists available_balance numeric(14, 2) not null default 0.00;
+  alter table public.profiles add column if not exists signup_bonus_credited boolean not null default false;
+  alter table public.profiles add column if not exists referral_code text;
+  alter table public.profiles add column if not exists referred_by uuid references public.profiles(id) on delete set null;
   alter table public.profiles add column if not exists created_at timestamptz not null default now();
   alter table public.profiles add column if not exists updated_at timestamptz not null default now();
 
@@ -71,7 +75,11 @@ begin
       status = case when lower(coalesce(status, 'active')) = 'deactivated' then 'deactivated' else 'active' end,
       full_name = coalesce(full_name, ''),
       phone = coalesce(phone, ''),
-      available_balance = greatest(coalesce(available_balance, 0.00), 0.00)
+      available_balance = greatest(coalesce(available_balance, 0.00), 0.00),
+      referral_code = coalesce(
+        nullif(upper(trim(referral_code)), ''),
+        'SI' || upper(substr(replace(id::text, '-', ''), 1, 6))
+      )
   where id is not null;
 
   alter table public.profiles alter column role set default 'member';
@@ -82,6 +90,10 @@ begin
   alter table public.profiles add constraint profiles_status_check check (status in ('active', 'deactivated'));
   alter table public.profiles add constraint profiles_available_balance_check check (available_balance >= 0);
 end $$;
+
+create unique index if not exists idx_profiles_referral_code_upper
+  on public.profiles (upper(referral_code))
+  where referral_code is not null;
 
 create table if not exists public.investment_packages (
   id uuid primary key default gen_random_uuid(),
@@ -181,7 +193,7 @@ where daily_reward_amount = 0.00 and id is not null;
 create table if not exists public.financial_ledger (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles(id) on delete restrict,
-  entry_type text not null check (entry_type in ('deposit_credit', 'withdrawal_hold', 'withdrawal_refund', 'package_purchase', 'package_reward')),
+  entry_type text not null check (entry_type in ('signup_bonus', 'deposit_credit', 'withdrawal_hold', 'withdrawal_refund', 'package_purchase', 'package_reward', 'referral_commission')),
   direction text not null check (direction in ('credit', 'debit')),
   amount numeric(14, 2) not null check (amount > 0),
   balance_before numeric(14, 2) not null check (balance_before >= 0),
@@ -208,13 +220,55 @@ begin
   end loop;
   alter table public.financial_ledger
     add constraint financial_ledger_entry_type_check
-    check (entry_type in ('deposit_credit', 'withdrawal_hold', 'withdrawal_refund', 'package_purchase', 'package_reward'));
+    check (entry_type in ('signup_bonus', 'deposit_credit', 'withdrawal_hold', 'withdrawal_refund', 'package_purchase', 'package_reward', 'referral_commission'));
 end $$;
+
+create table if not exists public.referral_commissions (
+  id uuid primary key default gen_random_uuid(),
+  referrer_id uuid not null references public.profiles(id) on delete restrict,
+  referred_user_id uuid not null references public.profiles(id) on delete restrict,
+  purchase_id uuid not null unique references public.package_purchases(id) on delete restrict,
+  package_name text not null,
+  package_price numeric(14, 2) not null check (package_price > 0),
+  commission_rate numeric(6, 2) not null default 35.00 check (commission_rate >= 0 and commission_rate <= 100),
+  commission_amount numeric(14, 2) not null check (commission_amount >= 0),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.support_settings (
+  id integer primary key default 1 check (id = 1),
+  support_title text not null default 'SMART INVEST Customer Support',
+  support_hours text not null default '9:00 AM - 10:00 PM (GMT+6)',
+  whatsapp_number text not null default '',
+  telegram_link text not null default '',
+  support_email text not null default '',
+  notice_text text not null default 'Need help with deposits, withdrawals, or packages? Contact us or send a support message below.',
+  is_active boolean not null default true,
+  updated_by uuid references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.support_settings (id) values (1) on conflict (id) do nothing;
+
+create table if not exists public.support_tickets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  subject text not null,
+  message text not null,
+  status text not null default 'open' check (status in ('open', 'replied', 'closed')),
+  admin_reply text,
+  replied_by uuid references public.profiles(id) on delete set null,
+  replied_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 
 create index if not exists idx_deposit_requests_user_created on public.deposit_requests(user_id, created_at desc);
 create index if not exists idx_withdrawal_requests_user_created on public.withdrawal_requests(user_id, created_at desc);
 create index if not exists idx_package_purchases_user_created on public.package_purchases(user_id, created_at desc);
 create index if not exists idx_financial_ledger_user_created on public.financial_ledger(user_id, created_at desc);
+create index if not exists idx_referral_commissions_referrer on public.referral_commissions(referrer_id, created_at desc);
+create index if not exists idx_support_tickets_user_created on public.support_tickets(user_id, created_at desc);
 
 -- ----------------------------------------------------------------------------
 -- 2. IMMUTABILITY & INTEGRITY TRIGGERS
@@ -255,7 +309,12 @@ create trigger trg_financial_ledger_immutable
   before update or delete on public.financial_ledger
   for each row execute function public.prevent_ledger_mutation();
 
--- Prevent authenticated browser clients from mutating role, status, or available_balance directly
+drop trigger if exists trg_support_tickets_updated_at on public.support_tickets;
+create trigger trg_support_tickets_updated_at
+  before update on public.support_tickets
+  for each row execute function public.set_updated_at();
+
+-- Prevent authenticated browser clients from mutating role, status, balance, or referral fields directly
 create or replace function public.protect_profile_sensitive_columns()
 returns trigger
 language plpgsql
@@ -265,6 +324,9 @@ begin
     if new.role is distinct from old.role
        or new.status is distinct from old.status
        or new.available_balance is distinct from old.available_balance
+       or new.signup_bonus_credited is distinct from old.signup_bonus_credited
+       or new.referral_code is distinct from old.referral_code
+       or new.referred_by is distinct from old.referred_by
        or new.email is distinct from old.email then
       raise exception 'Direct modification of protected profile fields is forbidden.';
     end if;
@@ -285,8 +347,23 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_ref_code text;
+  v_referrer_id uuid;
 begin
-  insert into public.profiles (id, email, full_name, phone, role, status, available_balance)
+  v_ref_code := upper(trim(coalesce(new.raw_user_meta_data->>'referral_code', '')));
+  if v_ref_code <> '' then
+    select id into v_referrer_id
+    from public.profiles
+    where upper(referral_code) = v_ref_code
+      and id <> new.id
+      and status = 'active'
+    limit 1;
+  end if;
+
+  insert into public.profiles (
+    id, email, full_name, phone, role, status, available_balance, signup_bonus_credited, referral_code, referred_by
+  )
   values (
     new.id,
     lower(coalesce(new.email, '')),
@@ -294,9 +371,26 @@ begin
     coalesce(new.raw_user_meta_data->>'phone', ''),
     'member',
     'active',
-    0.00
+    100.00,
+    true,
+    'SI' || upper(substr(replace(new.id::text, '-', ''), 1, 6)),
+    v_referrer_id
   )
   on conflict (id) do nothing;
+
+  if found then
+    insert into public.financial_ledger (
+      user_id, entry_type, direction, amount,
+      balance_before, balance_after,
+      reference_table, reference_id, description, created_by
+    ) values (
+      new.id, 'signup_bonus', 'credit', 100.00,
+      0.00, 100.00,
+      'profiles', new.id,
+      'Welcome signup bonus (৳100.00)',
+      new.id
+    );
+  end if;
   return new;
 end;
 $$;
@@ -333,6 +427,9 @@ alter table public.deposit_requests enable row level security;
 alter table public.withdrawal_requests enable row level security;
 alter table public.package_purchases enable row level security;
 alter table public.financial_ledger enable row level security;
+alter table public.referral_commissions enable row level security;
+alter table public.support_settings enable row level security;
+alter table public.support_tickets enable row level security;
 
 -- profiles policies
 drop policy if exists "profiles_select_own_or_admin" on public.profiles;
@@ -346,6 +443,7 @@ create policy "profiles_insert_own" on public.profiles
     and role = 'member'
     and status = 'active'
     and available_balance = 0.00
+    and signup_bonus_credited = false
   );
 
 drop policy if exists "profiles_update_own_safe_fields" on public.profiles;
@@ -390,6 +488,33 @@ create policy "purchases_select_own_or_admin" on public.package_purchases
 drop policy if exists "ledger_select_own_or_admin" on public.financial_ledger;
 create policy "ledger_select_own_or_admin" on public.financial_ledger
   for select using (auth.uid() = user_id or public.is_admin());
+
+-- referral_commissions policies (read own referrer/referred or admin; inserts strictly via purchase_package RPC)
+drop policy if exists "referrals_select_own_or_admin" on public.referral_commissions;
+create policy "referrals_select_own_or_admin" on public.referral_commissions
+  for select using (auth.uid() = referrer_id or auth.uid() = referred_user_id or public.is_admin());
+
+-- support_settings policies (public read when active; admin write)
+drop policy if exists "support_settings_select_active_or_admin" on public.support_settings;
+create policy "support_settings_select_active_or_admin" on public.support_settings
+  for select using (is_active = true or public.is_admin());
+
+drop policy if exists "support_settings_admin_write" on public.support_settings;
+create policy "support_settings_admin_write" on public.support_settings
+  for all using (public.is_admin()) with check (public.is_admin());
+
+-- support_tickets policies (read/insert own; admin read/update all)
+drop policy if exists "support_tickets_select_own_or_admin" on public.support_tickets;
+create policy "support_tickets_select_own_or_admin" on public.support_tickets
+  for select using (auth.uid() = user_id or public.is_admin());
+
+drop policy if exists "support_tickets_insert_own" on public.support_tickets;
+create policy "support_tickets_insert_own" on public.support_tickets
+  for insert with check (auth.uid() = user_id and status = 'open');
+
+drop policy if exists "support_tickets_admin_update" on public.support_tickets;
+create policy "support_tickets_admin_update" on public.support_tickets
+  for update using (public.is_admin()) with check (public.is_admin());
 
 -- ----------------------------------------------------------------------------
 -- 4. ATOMIC TRANSACTIONAL STORED PROCEDURES (RPCs)
@@ -746,7 +871,7 @@ begin
 end;
 $$;
 
--- 4F. Purchase Investment Package (Atomic verified-balance deduction + ledger entry)
+-- 4F. Purchase Investment Package (Atomic verified-balance deduction + 35% referral commission + ledger entry)
 create or replace function public.purchase_package(
   p_user_id uuid,
   p_package_id uuid,
@@ -759,12 +884,18 @@ set search_path = public
 as $$
 declare
   v_member public.profiles%rowtype;
+  v_referrer public.profiles%rowtype;
   v_package public.investment_packages%rowtype;
   v_balance_before numeric(14, 2);
   v_balance_after numeric(14, 2);
   v_daily_rate numeric(6, 2);
   v_daily_reward numeric(14, 2);
   v_purchase_id uuid;
+  v_comm_id uuid;
+  v_comm_rate numeric(6, 2) := 35.00;
+  v_comm_amount numeric(14, 2) := 0.00;
+  v_ref_before numeric(14, 2);
+  v_ref_after numeric(14, 2);
   v_starts_at timestamptz := now();
   v_matures_at timestamptz;
 begin
@@ -828,13 +959,55 @@ begin
     p_user_id
   );
 
+  -- Credit 35% referral commission to active referrer if member was referred
+  if v_member.referred_by is not null and v_member.referred_by <> p_user_id then
+    select * into v_referrer
+    from public.profiles
+    where id = v_member.referred_by
+    for update;
+
+    if found and v_referrer.status = 'active' then
+      v_comm_amount := round(v_package.price * v_comm_rate / 100.0, 2);
+      if v_comm_amount > 0 then
+        v_ref_before := v_referrer.available_balance;
+        v_ref_after := round(v_ref_before + v_comm_amount, 2);
+
+        update public.profiles
+        set available_balance = v_ref_after
+        where id = v_referrer.id;
+
+        insert into public.referral_commissions (
+          referrer_id, referred_user_id, purchase_id,
+          package_name, package_price, commission_rate, commission_amount
+        ) values (
+          v_referrer.id, p_user_id, v_purchase_id,
+          v_package.name, v_package.price, v_comm_rate, v_comm_amount
+        )
+        returning id into v_comm_id;
+
+        insert into public.financial_ledger (
+          user_id, entry_type, direction, amount,
+          balance_before, balance_after,
+          reference_table, reference_id, description, created_by
+        ) values (
+          v_referrer.id, 'referral_commission', 'credit', v_comm_amount,
+          v_ref_before, v_ref_after,
+          'referral_commissions', v_comm_id,
+          format('35%% referral commission from %s (%s)', coalesce(nullif(trim(v_member.full_name), ''), v_member.email), v_package.name),
+          p_user_id
+        );
+      end if;
+    end if;
+  end if;
+
   return jsonb_build_object(
     'purchase_id', v_purchase_id,
     'package_name', v_package.name,
     'daily_return_rate', v_daily_rate,
     'daily_reward_amount', v_daily_reward,
     'balance_after', v_balance_after,
-    'matures_at', v_matures_at
+    'matures_at', v_matures_at,
+    'referral_commission_credited', v_comm_amount
   );
 end;
 $$;

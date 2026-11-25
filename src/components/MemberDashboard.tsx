@@ -6,22 +6,30 @@ import {
   Check,
   CheckCircle2,
   Copy,
-  Download,
   FileText,
-  History,
-  LayoutDashboard,
+  Headphones,
+  Mail,
+  MessageCircle,
   Package,
   RefreshCw,
-  Search,
+  Send,
   User,
+  Users,
   X,
 } from 'lucide-react';
 import { apiRequest } from '../lib/api';
-import { exportRowsToCsv, formatCurrency, formatDate, formatDateTime } from '../lib/format';
+import {
+  formatCurrency,
+  formatDate,
+  formatDateTime,
+  sanitizeEmailAddress,
+  sanitizeTelegramUrl,
+  sanitizeWhatsAppUrl,
+} from '../lib/format';
 import type { InvestmentPackage, MemberBootstrapData, PackagePurchase, PaymentMethod } from '../types';
 import { StatusLabel } from './StatusLabel';
 
-export type MemberTab = 'overview' | 'packages' | 'deposits' | 'withdrawals' | 'ledger' | 'profile';
+export type MemberTab = 'packages' | 'deposits' | 'withdrawals' | 'referrals' | 'support' | 'profile';
 
 export interface DepositDraft {
   method: PaymentMethod;
@@ -91,9 +99,15 @@ export function MemberDashboard({
   const [profileSubmitting, setProfileSubmitting] = useState(false);
   const [profileFeedback, setProfileFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
-  // Ledger & Terms Inspection State
-  const [ledgerDirectionFilter, setLedgerDirectionFilter] = useState<'all' | 'credit' | 'debit'>('all');
-  const [ledgerSearch, setLedgerSearch] = useState('');
+  // Referral & Support State
+  const [copiedRefCode, setCopiedRefCode] = useState(false);
+  const [copiedRefLink, setCopiedRefLink] = useState(false);
+  const [supportSubject, setSupportSubject] = useState('');
+  const [supportMessage, setSupportMessage] = useState('');
+  const [supportSubmitting, setSupportSubmitting] = useState(false);
+  const [supportFeedback, setSupportFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // Terms & Daily Claim State
   const [selectedPurchaseTerms, setSelectedPurchaseTerms] = useState<PackagePurchase | null>(null);
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [claimFeedback, setClaimFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
@@ -136,12 +150,28 @@ export function MemberDashboard({
 
   if (!data) return null;
 
-  const { profile, packages, paymentInstructions, deposits, withdrawals, purchases, ledger } = data;
+  const {
+    profile,
+    packages,
+    paymentInstructions,
+    deposits,
+    withdrawals,
+    purchases,
+    referrals = [],
+    referralCommissions = [],
+    supportSettings = null,
+    supportTickets = [],
+  } = data;
   const activeInstruction = paymentInstructions.find((item) => item.method === depMethod);
   const pendingDepositsCount = deposits.filter((d) => d.status === 'pending').length;
   const pendingWithdrawalsCount = withdrawals.filter((w) => w.status === 'pending').length;
   const hasPendingWithdrawal = pendingWithdrawalsCount > 0;
   const activePackagesCount = purchases.filter((p) => p.status === 'active').length;
+  const totalReferralEarned = referralCommissions.reduce((sum, item) => sum + Number(item.commission_amount || 0), 0);
+  const referralLink =
+    typeof window !== 'undefined' && profile.referral_code
+      ? `${window.location.origin}/?ref=${encodeURIComponent(profile.referral_code)}`
+      : '';
 
   const handleDepositSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -263,12 +293,42 @@ export function MemberDashboard({
     }
   };
 
-  const navItems: { id: MemberTab; label: string; icon: typeof LayoutDashboard }[] = [
-    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  const handleSupportSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setSupportFeedback(null);
+    setSupportSubmitting(true);
+    try {
+      await apiRequest('/api/member/support', {
+        method: 'POST',
+        requireAuth: true,
+        body: {
+          subject: supportSubject.trim(),
+          message: supportMessage.trim(),
+        },
+      });
+      setSupportSubject('');
+      setSupportMessage('');
+      setSupportFeedback({
+        type: 'success',
+        text: 'Your support message has been sent. Our administrator team will reply here soon.',
+      });
+      await onRefresh();
+    } catch (err) {
+      setSupportFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to send support message.',
+      });
+    } finally {
+      setSupportSubmitting(false);
+    }
+  };
+
+  const navItems: { id: MemberTab; label: string; icon: typeof Package }[] = [
     { id: 'packages', label: 'Packages', icon: Package },
     { id: 'deposits', label: 'Deposits', icon: ArrowDownLeft },
     { id: 'withdrawals', label: 'Withdrawals', icon: ArrowUpRight },
-    { id: 'ledger', label: 'Ledger', icon: History },
+    { id: 'referrals', label: 'Referrals (35%)', icon: Users },
+    { id: 'support', label: 'Support', icon: Headphones },
     { id: 'profile', label: 'Profile', icon: User },
   ];
 
@@ -284,7 +344,18 @@ export function MemberDashboard({
                 {profile.full_name || profile.email}
               </div>
               <div className="text-xs text-slate-500 truncate">{profile.email}</div>
+              {profile.referral_code && (
+                <div className="mt-2 text-xs text-slate-600">
+                  Ref Code: <span className="font-mono font-semibold text-blue-700">{profile.referral_code}</span>
+                </div>
+              )}
               <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between">
+                <span className="text-xs text-slate-500">Balance</span>
+                <span className="font-mono tabular-nums text-xs font-bold text-blue-700">
+                  {formatCurrency(profile.available_balance)}
+                </span>
+              </div>
+              <div className="mt-2 flex items-center justify-between">
                 <span className="text-xs text-slate-500">Status</span>
                 <StatusLabel status={profile.status} />
               </div>
@@ -333,85 +404,26 @@ export function MemberDashboard({
               </button>
             </div>
 
-            {/* KPI Strip */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-              <div className="bg-white border border-slate-200 rounded-xl p-5">
-                <div className="text-xs font-medium text-slate-500">Verified Available Balance</div>
-                <div className="font-mono tabular-nums text-2xl font-bold text-blue-700 mt-1.5">
-                  {formatCurrency(profile.available_balance)}
-                </div>
-                <div className="text-xs text-slate-500 mt-1">Usable for packages & payouts</div>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-5">
-                <div className="text-xs font-medium text-slate-500">Active Packages</div>
-                <div className="font-mono tabular-nums text-2xl font-bold text-slate-900 mt-1.5">
-                  {activePackagesCount}
-                </div>
-                <div className="text-xs text-slate-500 mt-1">{purchases.length} total historical</div>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-5">
-                <div className="text-xs font-medium text-slate-500">Pending Deposits</div>
-                <div className="font-mono tabular-nums text-2xl font-bold text-slate-900 mt-1.5">
-                  {pendingDepositsCount}
-                </div>
-                <div className="text-xs text-slate-500 mt-1">Awaiting admin confirmation</div>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-5">
-                <div className="text-xs font-medium text-slate-500">Pending Withdrawals</div>
-                <div className="font-mono tabular-nums text-2xl font-bold text-slate-900 mt-1.5">
-                  {pendingWithdrawalsCount}
-                </div>
-                <div className="text-xs text-slate-500 mt-1">Held until payout review</div>
-              </div>
-            </div>
+            {/* TAB: PACKAGES */}
+            {activeTab === 'packages' && (
+              <div className="space-y-8">
+                {schemaPending && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900">
+                    <span className="font-semibold">Database Setup Required:</span> Run <span className="font-mono">supabase/schema.sql</span> in Supabase SQL Editor to activate live packages, deposits, and purchases.
+                  </div>
+                )}
 
-            {/* TAB: OVERVIEW */}
-            {activeTab === 'overview' && (
-              <div className="space-y-6">
-                {/* Quick Actions */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <button
-                    type="button"
-                    onClick={() => onTabChange('deposits')}
-                    className="text-left bg-white border border-slate-200 hover:border-blue-300 rounded-xl p-5 transition-colors cursor-pointer"
-                  >
-                    <div className="text-sm font-semibold text-slate-900">Submit Deposit Request</div>
-                    <p className="text-xs text-slate-600 mt-1">Fund balance via bKash, Nagad, or Rocket.</p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onTabChange('packages')}
-                    className="text-left bg-white border border-slate-200 hover:border-blue-300 rounded-xl p-5 transition-colors cursor-pointer"
-                  >
-                    <div className="text-sm font-semibold text-slate-900">Browse Investment Packages</div>
-                    <p className="text-xs text-slate-600 mt-1">Allocate verified funds across Starter to Premium tiers.</p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onTabChange('withdrawals')}
-                    className="text-left bg-white border border-slate-200 hover:border-blue-300 rounded-xl p-5 transition-colors cursor-pointer"
-                  >
-                    <div className="text-sm font-semibold text-slate-900">Request Withdrawal</div>
-                    <p className="text-xs text-slate-600 mt-1">Withdraw verified funds to your MFS account.</p>
-                  </button>
-                </div>
-
-                {/* Purchased Package History */}
+                {/* Purchased Package History & 24h Claim */}
                 <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
                   <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
                     <div>
-                      <h2 className="font-display text-base font-bold text-slate-900">Purchased Package History & Daily Demo Income</h2>
+                      <h2 className="font-display text-base font-bold text-slate-900">
+                        Purchased Package History &amp; Daily Demo Income
+                      </h2>
                       <p className="text-xs text-slate-500 mt-0.5">
                         Demo daily returns unlock every 24 hours per active allocation until term completion.
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => onTabChange('packages')}
-                      className="text-xs font-medium text-blue-700 hover:text-blue-800 cursor-pointer shrink-0"
-                    >
-                      View All Packages
-                    </button>
                   </div>
                   {claimFeedback && (
                     <div
@@ -430,15 +442,8 @@ export function MemberDashboard({
                     </div>
                   )}
                   {purchases.length === 0 ? (
-                    <div className="p-8 text-center space-y-3">
-                      <p className="text-sm text-slate-600">You have not purchased any investment packages yet.</p>
-                      <button
-                        type="button"
-                        onClick={() => onTabChange('packages')}
-                        className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg cursor-pointer"
-                      >
-                        Explore Packages
-                      </button>
+                    <div className="p-6 text-center text-sm text-slate-600">
+                      You have not purchased any investment packages yet. Choose a package below to get started.
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
@@ -524,73 +529,7 @@ export function MemberDashboard({
                   )}
                 </section>
 
-                {/* Recent Transaction Activity */}
-                <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                  <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-                    <h2 className="font-display text-base font-bold text-slate-900">Recent Transaction History</h2>
-                    <button
-                      type="button"
-                      onClick={() => onTabChange('ledger')}
-                      className="text-xs font-medium text-blue-700 hover:text-blue-800 cursor-pointer"
-                    >
-                      Open Full Ledger
-                    </button>
-                  </div>
-                  {ledger.length === 0 ? (
-                    <div className="p-8 text-center text-sm text-slate-600">
-                      No transactions recorded yet. Approved deposits, package purchases, and withdrawal holds appear here.
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-sm">
-                        <thead>
-                          <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
-                            <th className="py-3 px-4 font-medium">Timestamp</th>
-                            <th className="py-3 px-4 font-medium">Description</th>
-                            <th className="py-3 px-4 font-medium">Type</th>
-                            <th className="py-3 px-4 font-medium text-right">Amount</th>
-                            <th className="py-3 px-4 font-medium text-right">Balance After</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {ledger.slice(0, 6).map((entry) => (
-                            <tr key={entry.id} className="hover:bg-slate-50">
-                              <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
-                                {formatDateTime(entry.created_at)}
-                              </td>
-                              <td className="py-3 px-4 text-slate-900">{entry.description}</td>
-                              <td className="py-3 px-4">
-                                <StatusLabel status={entry.direction} />
-                              </td>
-                              <td
-                                className={`py-3 px-4 text-right font-mono tabular-nums font-medium ${
-                                  entry.direction === 'credit' ? 'text-emerald-700' : 'text-red-700'
-                                }`}
-                              >
-                                {entry.direction === 'credit' ? '+' : '-'}
-                                {formatCurrency(entry.amount)}
-                              </td>
-                              <td className="py-3 px-4 text-right font-mono tabular-nums text-xs font-semibold text-slate-900">
-                                {formatCurrency(entry.balance_after)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {/* TAB: PACKAGES */}
-            {activeTab === 'packages' && (
-              <div className="space-y-8">
-                {schemaPending && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900">
-                    <span className="font-semibold">Database Setup Required:</span> Run <span className="font-mono">supabase/schema.sql</span> in Supabase SQL Editor to activate live packages, deposits, and purchases.
-                  </div>
-                )}
+                {/* Available Packages Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   {(packages.length > 0 ? packages : fallbackPackages).map((pkg) => {
                     const canAfford = Number(profile.available_balance) >= Number(pkg.price);
@@ -649,59 +588,6 @@ export function MemberDashboard({
                     );
                   })}
                 </div>
-
-                {/* Purchased History */}
-                <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                  <div className="px-5 py-4 border-b border-slate-200">
-                    <h2 className="font-display text-base font-bold text-slate-900">Your Purchased Packages</h2>
-                  </div>
-                  {purchases.length === 0 ? (
-                    <div className="p-8 text-center text-sm text-slate-600">
-                      No package allocations recorded yet.
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-sm">
-                        <thead>
-                          <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
-                            <th className="py-3 px-4 font-medium">Package</th>
-                            <th className="py-3 px-4 font-medium text-right">Price Paid</th>
-                            <th className="py-3 px-4 font-medium text-right">Daily Demo</th>
-                            <th className="py-3 px-4 font-medium text-right">Credited</th>
-                            <th className="py-3 px-4 font-medium">Purchased</th>
-                            <th className="py-3 px-4 font-medium">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {purchases.map((p) => {
-                            const rate = Number(p.daily_return_rate ?? 30);
-                            const dailyAmt = Number(
-                              p.daily_reward_amount || Math.round(Number(p.purchase_price) * rate) / 100
-                            );
-                            return (
-                              <tr key={p.id} className="hover:bg-slate-50">
-                                <td className="py-3 px-4 font-medium text-slate-900">{p.package_name}</td>
-                                <td className="py-3 px-4 text-right font-mono tabular-nums">
-                                  {formatCurrency(p.purchase_price)}
-                                </td>
-                                <td className="py-3 px-4 text-right font-mono tabular-nums text-emerald-700">
-                                  +{formatCurrency(dailyAmt)} ({rate}%)
-                                </td>
-                                <td className="py-3 px-4 text-right font-mono tabular-nums text-xs">
-                                  {Number(p.days_credited ?? 0)}/{p.duration_days}d · {formatCurrency(Number(p.total_credited ?? 0))}
-                                </td>
-                                <td className="py-3 px-4 text-xs text-slate-600">{formatDateTime(p.starts_at)}</td>
-                                <td className="py-3 px-4">
-                                  <StatusLabel status={p.status} />
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
               </div>
             )}
 
@@ -1107,135 +993,405 @@ export function MemberDashboard({
               </div>
             )}
 
-            {/* TAB: LEDGER */}
-            {activeTab === 'ledger' && (
-              <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                  <div>
-                    <h2 className="font-display text-base font-bold text-slate-900">Immutable Financial Ledger</h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Append-only accounting record of verified balance credits and debits.
-                    </p>
+            {/* TAB: REFERRALS (35% COMMISSION) */}
+            {activeTab === 'referrals' && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-white border border-slate-200 rounded-xl p-5">
+                    <div className="text-xs font-medium text-slate-500">Referral Commission Rate</div>
+                    <div className="font-mono tabular-nums text-2xl font-bold text-emerald-700 mt-1.5">35%</div>
+                    <div className="text-xs text-slate-500 mt-1">Credited instantly on referral purchases</div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                      {(['all', 'credit', 'debit'] as const).map((dir) => (
-                        <button
-                          key={dir}
-                          type="button"
-                          onClick={() => setLedgerDirectionFilter(dir)}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md capitalize cursor-pointer ${
-                            ledgerDirectionFilter === dir ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                          }`}
-                        >
-                          {dir}
-                        </button>
-                      ))}
+                  <div className="bg-white border border-slate-200 rounded-xl p-5">
+                    <div className="text-xs font-medium text-slate-500">Referred Members</div>
+                    <div className="font-mono tabular-nums text-2xl font-bold text-slate-900 mt-1.5">
+                      {referrals.length}
                     </div>
-                    <div className="relative">
-                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="search"
-                        value={ledgerSearch}
-                        onChange={(e) => setLedgerSearch(e.target.value)}
-                        placeholder="Search description..."
-                        className="pl-8 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
-                      />
+                    <div className="text-xs text-slate-500 mt-1">Accounts registered with your code</div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-5">
+                    <div className="text-xs font-medium text-slate-500">Total Referral Earned</div>
+                    <div className="font-mono tabular-nums text-2xl font-bold text-blue-700 mt-1.5">
+                      {formatCurrency(totalReferralEarned)}
                     </div>
-                    {ledger.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          exportRowsToCsv(
-                            'smart-invest-member-ledger.csv',
-                            ['Date', 'Type', 'Direction', 'Amount', 'Balance Before', 'Balance After', 'Description'],
-                            ledger.map((l) => [
-                              l.created_at,
-                              l.entry_type,
-                              l.direction,
-                              l.amount,
-                              l.balance_before,
-                              l.balance_after,
-                              l.description,
-                            ])
-                          )
-                        }
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>Export CSV</span>
-                      </button>
-                    )}
+                    <div className="text-xs text-slate-500 mt-1">{referralCommissions.length} commission payouts</div>
                   </div>
                 </div>
-                {(() => {
-                  const filtered = ledger.filter((entry) => {
-                    if (ledgerDirectionFilter !== 'all' && entry.direction !== ledgerDirectionFilter) {
-                      return false;
-                    }
-                    const q = ledgerSearch.trim().toLowerCase();
-                    if (q && !entry.description.toLowerCase().includes(q)) return false;
-                    return true;
-                  });
-                  if (filtered.length === 0) {
-                    return (
-                      <div className="p-8 text-center text-sm text-slate-600">
-                        {ledger.length === 0
-                          ? 'No ledger entries recorded yet. Ledger entries appear automatically when deposits are approved, withdrawals are requested or refunded, or packages are purchased.'
-                          : 'No ledger entries match your current filter.'}
+
+                {/* Invite Code & Share Link */}
+                <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-slate-900">
+                      Invite Partners &amp; Earn 35% Referral Commission
+                    </h2>
+                    <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                      Share your referral code or link below. Whenever an invited member purchases any investment package,{' '}
+                      <span className="font-semibold text-emerald-700">35% of the package price</span> is credited automatically to your verified available balance.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-blue-800 font-medium">Your Referral Code</div>
+                        <div className="font-mono text-lg font-bold text-slate-900 mt-0.5 select-all">
+                          {profile.referral_code || 'Generating...'}
+                        </div>
                       </div>
-                    );
-                  }
-                  return (
+                      {profile.referral_code && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(profile.referral_code);
+                              setCopiedRefCode(true);
+                              setTimeout(() => setCopiedRefCode(false), 2000);
+                            } catch {
+                              // Ignore clipboard errors
+                            }
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-blue-200 hover:bg-blue-100 text-blue-800 text-xs font-semibold rounded-lg shrink-0 cursor-pointer"
+                        >
+                          {copiedRefCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                          <span>{copiedRefCode ? 'Copied' : 'Copy Code'}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-slate-500 font-medium">Direct Invite Link</div>
+                        <div className="font-mono text-xs font-semibold text-slate-900 mt-1 truncate select-all">
+                          {referralLink || 'Unavailable'}
+                        </div>
+                      </div>
+                      {referralLink && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(referralLink);
+                              setCopiedRefLink(true);
+                              setTimeout(() => setCopiedRefLink(false), 2000);
+                            } catch {
+                              // Ignore clipboard errors
+                            }
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg shrink-0 cursor-pointer"
+                        >
+                          {copiedRefLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                          <span>{copiedRefLink ? 'Copied' : 'Copy Link'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </section>
+
+                {/* Commission Payouts History */}
+                <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-slate-200">
+                    <h2 className="font-display text-base font-bold text-slate-900">
+                      35% Referral Commission History
+                    </h2>
+                  </div>
+                  {referralCommissions.length === 0 ? (
+                    <div className="p-8 text-center text-sm text-slate-600">
+                      No referral commissions earned yet. Share your link to start earning 35% per package allocation.
+                    </div>
+                  ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full text-left border-collapse text-sm">
                         <thead>
                           <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
-                            <th className="py-3 px-4 font-medium">Timestamp</th>
-                            <th className="py-3 px-4 font-medium">Description</th>
-                            <th className="py-3 px-4 font-medium">Type</th>
-                            <th className="py-3 px-4 font-medium text-right">Amount</th>
-                            <th className="py-3 px-4 font-medium text-right">Before</th>
-                            <th className="py-3 px-4 font-medium text-right">After</th>
+                            <th className="py-3 px-4 font-medium">Date</th>
+                            <th className="py-3 px-4 font-medium">Package Purchased</th>
+                            <th className="py-3 px-4 font-medium text-right">Package Price</th>
+                            <th className="py-3 px-4 font-medium text-right">Rate</th>
+                            <th className="py-3 px-4 font-medium text-right">35% Commission Credited</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {filtered.map((entry) => (
-                            <tr key={entry.id} className="hover:bg-slate-50">
+                          {referralCommissions.map((c) => (
+                            <tr key={c.id} className="hover:bg-slate-50">
                               <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
-                                {formatDateTime(entry.created_at)}
+                                {formatDateTime(c.created_at)}
                               </td>
-                              <td className="py-3 px-4 text-slate-900">{entry.description}</td>
-                              <td className="py-3 px-4">
-                                <StatusLabel status={entry.direction} />
-                              </td>
-                              <td
-                                className={`py-3 px-4 text-right font-mono tabular-nums font-medium ${
-                                  entry.direction === 'credit' ? 'text-emerald-700' : 'text-red-700'
-                                }`}
-                              >
-                                {entry.direction === 'credit' ? '+' : '-'}
-                                {formatCurrency(entry.amount)}
+                              <td className="py-3 px-4 font-medium text-slate-900">{c.package_name}</td>
+                              <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-700">
+                                {formatCurrency(c.package_price)}
                               </td>
                               <td className="py-3 px-4 text-right font-mono tabular-nums text-xs text-slate-600">
-                                {formatCurrency(entry.balance_before)}
+                                {Number(c.commission_rate ?? 35)}%
                               </td>
-                              <td className="py-3 px-4 text-right font-mono tabular-nums text-xs font-semibold text-slate-900">
-                                {formatCurrency(entry.balance_after)}
+                              <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-emerald-700">
+                                +{formatCurrency(c.commission_amount)}
                               </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
-                  );
-                })()}
-              </section>
+                  )}
+                </section>
+
+                {/* Referred Members List */}
+                <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-slate-200">
+                    <h2 className="font-display text-base font-bold text-slate-900">Referred Members</h2>
+                  </div>
+                  {referrals.length === 0 ? (
+                    <div className="p-8 text-center text-sm text-slate-600">
+                      No members have signed up using your referral code yet.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+                            <th className="py-3 px-4 font-medium">Member</th>
+                            <th className="py-3 px-4 font-medium">Joined Date</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {referrals.map((r) => (
+                            <tr key={r.id} className="hover:bg-slate-50">
+                              <td className="py-3 px-4 font-medium text-slate-900">{r.label}</td>
+                              <td className="py-3 px-4 text-xs text-slate-600">{formatDateTime(r.joined_at)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {/* TAB: CUSTOMER SUPPORT */}
+            {activeTab === 'support' && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* Live Admin-Configured Support Channels */}
+                  <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+                    <div className="flex items-center gap-2 text-blue-700">
+                      <Headphones className="w-4 h-4" />
+                      <h2 className="font-display text-base font-bold text-slate-900">
+                        {supportSettings?.support_title || 'SMART INVEST Customer Support'}
+                      </h2>
+                    </div>
+
+                    {supportSettings?.is_active !== false ? (
+                      <div className="space-y-3">
+                        <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 border border-slate-200 rounded-lg p-3.5">
+                          {supportSettings?.notice_text ||
+                            'Contact our administrator support team via the channels below or submit a direct support message.'}
+                        </p>
+                        {supportSettings?.support_hours && (
+                          <div className="text-xs text-slate-600 flex items-center justify-between">
+                            <span>Support Hours</span>
+                            <span className="font-medium text-slate-900">{supportSettings.support_hours}</span>
+                          </div>
+                        )}
+                        <div className="space-y-2 pt-1">
+                          {(() => {
+                            const waUrl = sanitizeWhatsAppUrl(supportSettings?.whatsapp_number);
+                            const tgUrl = sanitizeTelegramUrl(supportSettings?.telegram_link);
+                            const emailAddr = sanitizeEmailAddress(supportSettings?.support_email);
+                            if (!waUrl && !tgUrl && !emailAddr) {
+                              return (
+                                <p className="text-xs text-slate-500">
+                                  Use the ticket form to message an administrator directly.
+                                </p>
+                              );
+                            }
+                            return (
+                              <>
+                                {waUrl && (
+                                  <a
+                                    href={waUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors"
+                                  >
+                                    <MessageCircle className="w-4 h-4" />
+                                    <span>WhatsApp: {supportSettings?.whatsapp_number}</span>
+                                  </a>
+                                )}
+                                {tgUrl && (
+                                  <a
+                                    href={tgUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold rounded-lg transition-colors"
+                                  >
+                                    <Send className="w-4 h-4" />
+                                    <span>Telegram Support Channel</span>
+                                  </a>
+                                )}
+                                {emailAddr && (
+                                  <a
+                                    href={`mailto:${emailAddr}`}
+                                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-lg transition-colors"
+                                  >
+                                    <Mail className="w-4 h-4" />
+                                    <span>{emailAddr}</span>
+                                  </a>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-600">
+                        Direct chat links are currently paused. Submit a support message using the form and our team will reply here.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Send Support Message Form */}
+                  <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+                    <div>
+                      <h2 className="font-display text-base font-bold text-slate-900">Send Support Request</h2>
+                      <p className="text-xs text-slate-600 mt-1">
+                        Submit questions regarding deposits, packages, referrals, or payouts directly to administrators.
+                      </p>
+                    </div>
+
+                    {supportFeedback && (
+                      <div
+                        className={`rounded-lg px-3.5 py-2.5 text-xs flex items-start gap-2 border ${
+                          supportFeedback.type === 'success'
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                            : 'bg-red-50 border-red-200 text-red-800'
+                        }`}
+                      >
+                        {supportFeedback.type === 'success' ? (
+                          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                        )}
+                        <span>{supportFeedback.text}</span>
+                      </div>
+                    )}
+
+                    <form onSubmit={handleSupportSubmit} className="space-y-4">
+                      <div>
+                        <label htmlFor="sup-subject" className="block text-xs font-medium text-slate-700 mb-1.5">
+                          Subject
+                        </label>
+                        <input
+                          id="sup-subject"
+                          type="text"
+                          required
+                          maxLength={120}
+                          value={supportSubject}
+                          onChange={(e) => setSupportSubject(e.target.value)}
+                          placeholder="e.g. Deposit TrxID check or Referral question"
+                          className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor="sup-message" className="block text-xs font-medium text-slate-700 mb-1.5">
+                          Message
+                        </label>
+                        <textarea
+                          id="sup-message"
+                          rows={4}
+                          required
+                          maxLength={1500}
+                          value={supportMessage}
+                          onChange={(e) => setSupportMessage(e.target.value)}
+                          placeholder="Describe your question or include your Transaction ID..."
+                          className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={supportSubmitting}
+                        className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                      >
+                        {supportSubmitting ? 'Sending...' : 'Send Support Message'}
+                      </button>
+                    </form>
+                  </div>
+                </div>
+
+                {/* Member Support Ticket History */}
+                <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                  <div className="px-5 py-4 border-b border-slate-200">
+                    <h2 className="font-display text-base font-bold text-slate-900">Your Support Messages</h2>
+                  </div>
+                  {supportTickets.length === 0 ? (
+                    <div className="p-8 text-center text-sm text-slate-600">
+                      No support requests submitted yet.
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100">
+                      {supportTickets.map((t) => (
+                        <div key={t.id} className="p-5 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <h3 className="text-sm font-semibold text-slate-900">{t.subject}</h3>
+                            <div className="flex items-center gap-3">
+                              <StatusLabel status={t.status} />
+                              <span className="text-xs text-slate-500">{formatDateTime(t.created_at)}</span>
+                            </div>
+                          </div>
+                          <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line">{t.message}</p>
+                          {t.admin_reply && (
+                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3.5 space-y-1">
+                              <div className="text-xs font-semibold text-blue-900">
+                                Support Reply {t.replied_at ? `· ${formatDateTime(t.replied_at)}` : ''}
+                              </div>
+                              <p className="text-xs text-blue-900 leading-relaxed whitespace-pre-line">{t.admin_reply}</p>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </div>
             )}
 
             {/* TAB: PROFILE */}
             {activeTab === 'profile' && (
-              <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-6 max-w-2xl">
+              <div className="space-y-6">
+                {/* Account Summary Cards (Profile Only) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                  <div className="bg-white border border-slate-200 rounded-xl p-5">
+                    <div className="text-xs font-medium text-slate-500">Verified Available Balance</div>
+                    <div className="font-mono tabular-nums text-2xl font-bold text-blue-700 mt-1.5">
+                      {formatCurrency(profile.available_balance)}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">Usable for packages &amp; payouts</div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-5">
+                    <div className="text-xs font-medium text-slate-500">Active Packages</div>
+                    <div className="font-mono tabular-nums text-2xl font-bold text-slate-900 mt-1.5">
+                      {activePackagesCount}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">{purchases.length} total historical</div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-5">
+                    <div className="text-xs font-medium text-slate-500">Pending Deposits</div>
+                    <div className="font-mono tabular-nums text-2xl font-bold text-slate-900 mt-1.5">
+                      {pendingDepositsCount}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">Awaiting admin confirmation</div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-5">
+                    <div className="text-xs font-medium text-slate-500">Pending Withdrawals</div>
+                    <div className="font-mono tabular-nums text-2xl font-bold text-slate-900 mt-1.5">
+                      {pendingWithdrawalsCount}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">Held until payout review</div>
+                  </div>
+                </div>
+
+                <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-6 max-w-2xl">
                 <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
                   <div>
                     <h2 className="font-display text-base font-bold text-slate-900">Member Profile</h2>
@@ -1273,6 +1429,19 @@ export function MemberDashboard({
                       disabled
                       value={profile.email}
                       className="w-full px-3.5 py-2.5 text-sm bg-slate-100 text-slate-600 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="prof-refcode" className="block text-xs font-medium text-slate-700 mb-1.5">
+                      Referral Code (35% Commission · Read-Only)
+                    </label>
+                    <input
+                      id="prof-refcode"
+                      type="text"
+                      disabled
+                      value={profile.referral_code || '—'}
+                      className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-100 text-blue-700 font-semibold border border-slate-200 rounded-lg"
                     />
                   </div>
 
@@ -1318,6 +1487,7 @@ export function MemberDashboard({
                   </div>
                 </form>
               </section>
+              </div>
             )}
           </main>
         </div>

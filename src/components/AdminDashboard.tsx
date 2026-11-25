@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   AlertCircle,
   ArrowDownLeft,
@@ -9,7 +9,7 @@ import {
   CreditCard,
   Download,
   FileCode2,
-  History,
+  Headphones,
   Package,
   Plus,
   RefreshCw,
@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest } from '../lib/api';
-import { exportRowsToCsv, formatCurrency, formatDate, formatDateTime } from '../lib/format';
+import { formatCurrency, formatDate, formatDateTime } from '../lib/format';
 import type {
   AdminOverviewData,
   InvestmentPackage,
@@ -27,10 +27,13 @@ import type {
   PaymentMethod,
   Profile,
   RequestStatus,
+  SupportSettings,
+  SupportTicket,
+  SupportTicketStatus,
 } from '../types';
 import { StatusLabel } from './StatusLabel';
 
-type AdminTab = 'deposits' | 'withdrawals' | 'members' | 'packages' | 'allocations' | 'instructions' | 'ledger';
+type AdminTab = 'deposits' | 'withdrawals' | 'members' | 'packages' | 'allocations' | 'instructions' | 'support';
 
 interface AdminDashboardProps {
   currentAdmin: Profile | null;
@@ -57,8 +60,7 @@ export function AdminDashboard({
   const [tab, setTab] = useState<AdminTab>('deposits');
   const [statusFilter, setStatusFilter] = useState<'all' | RequestStatus>('pending');
   const [memberSearch, setMemberSearch] = useState('');
-  const [ledgerSearch, setLedgerSearch] = useState('');
-  const [ledgerTypeFilter, setLedgerTypeFilter] = useState<string>('all');
+  const [ticketFilter, setTicketFilter] = useState<'all' | SupportTicketStatus>('all');
   const [actionBusy, setActionBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -72,6 +74,20 @@ export function AdminDashboard({
   // Payment instruction edit state
   const [editingInstruction, setEditingInstruction] = useState<PaymentInstruction | null>(null);
 
+  // Customer support settings & reply modal
+  const [supportForm, setSupportForm] = useState<Omit<SupportSettings, 'id' | 'updated_at'>>({
+    support_title: 'SMART INVEST Customer Support',
+    support_hours: '9:00 AM - 10:00 PM (GMT+6)',
+    whatsapp_number: '',
+    telegram_link: '',
+    support_email: '',
+    notice_text: 'Need help with deposits, packages, or withdrawals? Contact our support desk.',
+    is_active: true,
+  });
+  const [replyingTicket, setReplyingTicket] = useState<SupportTicket | null>(null);
+  const [ticketReplyText, setTicketReplyText] = useState('');
+  const [ticketReplyStatus, setTicketReplyStatus] = useState<'replied' | 'closed'>('replied');
+
   // Member inspect modal
   const [inspectedMember, setInspectedMember] = useState<Profile | null>(null);
 
@@ -79,6 +95,19 @@ export function AdminDashboard({
   const [sqlText, setSqlText] = useState<string | null>(null);
   const [sqlCopied, setSqlCopied] = useState(false);
   const [sqlLoading, setSqlLoading] = useState(false);
+
+  useEffect(() => {
+    if (!data?.supportSettings) return;
+    setSupportForm({
+      support_title: data.supportSettings.support_title || 'SMART INVEST Customer Support',
+      support_hours: data.supportSettings.support_hours || '9:00 AM - 10:00 PM (GMT+6)',
+      whatsapp_number: data.supportSettings.whatsapp_number || '',
+      telegram_link: data.supportSettings.telegram_link || '',
+      support_email: data.supportSettings.support_email || '',
+      notice_text: data.supportSettings.notice_text || '',
+      is_active: data.supportSettings.is_active !== false,
+    });
+  }, [data?.supportSettings]);
 
   const memberLookup = useMemo(() => {
     const map = new Map<string, Profile>();
@@ -144,11 +173,22 @@ export function AdminDashboard({
 
   if (!data) return null;
 
-  const { members, deposits, withdrawals, packages, paymentInstructions, ledger } = data;
+  const {
+    members,
+    deposits,
+    withdrawals,
+    packages,
+    paymentInstructions,
+    ledger,
+    referralCommissions = [],
+    supportTickets = [],
+  } = data;
   const pendingDeposits = deposits.filter((d) => d.status === 'pending');
   const pendingWithdrawals = withdrawals.filter((w) => w.status === 'pending');
+  const openTicketsCount = supportTickets.filter((t) => t.status === 'open').length;
   const activeMembers = members.filter((m) => m.status === 'active').length;
   const totalVerifiedBalances = members.reduce((sum, m) => sum + Number(m.available_balance || 0), 0);
+  const totalCommissionsPaid = referralCommissions.reduce((sum, c) => sum + Number(c.commission_amount || 0), 0);
 
   const filteredDeposits = deposits.filter((d) =>
     statusFilter === 'all' ? true : d.status === statusFilter
@@ -162,20 +202,13 @@ export function AdminDashboard({
     return (
       m.email.toLowerCase().includes(q) ||
       m.full_name.toLowerCase().includes(q) ||
-      m.phone.toLowerCase().includes(q)
+      m.phone.toLowerCase().includes(q) ||
+      (m.referral_code || '').toLowerCase().includes(q)
     );
   });
-  const filteredLedger = ledger.filter((entry) => {
-    if (ledgerTypeFilter !== 'all' && entry.entry_type !== ledgerTypeFilter) return false;
-    const q = ledgerSearch.trim().toLowerCase();
-    if (!q) return true;
-    const owner = memberLookup.get(entry.user_id);
-    return (
-      entry.description.toLowerCase().includes(q) ||
-      (owner?.email.toLowerCase().includes(q) ?? false) ||
-      (owner?.full_name.toLowerCase().includes(q) ?? false)
-    );
-  });
+  const filteredTickets = supportTickets.filter((t) =>
+    ticketFilter === 'all' ? true : t.status === ticketFilter
+  );
 
   const handleConfirmReview = async (e: FormEvent) => {
     e.preventDefault();
@@ -397,6 +430,59 @@ export function AdminDashboard({
     }
   };
 
+  const handleSaveSupportSettings = async (e: FormEvent) => {
+    e.preventDefault();
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      await apiRequest('/api/admin/support-settings', {
+        method: 'PUT',
+        requireAuth: true,
+        body: supportForm,
+      });
+      setFeedback({ type: 'success', text: 'Customer support settings saved.' });
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to save customer support settings.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleConfirmTicketReply = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!replyingTicket) return;
+    setActionBusy(true);
+    setFeedback(null);
+    try {
+      await apiRequest(`/api/admin/support-tickets/${replyingTicket.id}/reply`, {
+        method: 'POST',
+        requireAuth: true,
+        body: {
+          admin_reply: ticketReplyText.trim(),
+          status: ticketReplyStatus,
+        },
+      });
+      setFeedback({
+        type: 'success',
+        text: `Support ticket ${ticketReplyStatus === 'closed' ? 'closed' : 'replied'}.`,
+      });
+      setReplyingTicket(null);
+      setTicketReplyText('');
+      await onRefresh();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to update support ticket.',
+      });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const tabs: { id: AdminTab; label: string; count?: number; icon: typeof ArrowDownLeft }[] = [
     { id: 'deposits', label: 'Deposits', count: pendingDeposits.length, icon: ArrowDownLeft },
     { id: 'withdrawals', label: 'Withdrawals', count: pendingWithdrawals.length, icon: ArrowUpRight },
@@ -404,7 +490,7 @@ export function AdminDashboard({
     { id: 'packages', label: 'Packages', icon: Package },
     { id: 'allocations', label: 'Allocations', count: data.purchases.length, icon: CheckCircle2 },
     { id: 'instructions', label: 'Payment Setup', icon: CreditCard },
-    { id: 'ledger', label: 'All Transactions', icon: History },
+    { id: 'support', label: 'Customer Support', count: openTicketsCount, icon: Headphones },
   ];
 
   return (
@@ -415,7 +501,7 @@ export function AdminDashboard({
           <div>
             <div className="text-xs font-semibold text-blue-700">SMART INVEST · Administrator Console</div>
             <h1 className="font-display text-2xl font-bold text-slate-900 mt-0.5">
-              Operations, Verification & Ledger Governance
+              Operations, Verification &amp; Support Management
             </h1>
           </div>
           <button
@@ -424,13 +510,13 @@ export function AdminDashboard({
             className="inline-flex items-center gap-2 self-start px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer whitespace-nowrap"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>Refresh Overview</span>
+            <span>Refresh Data</span>
           </button>
         </div>
 
         {/* Demo Mode & Legal Readiness Notice */}
         <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-900">
-          <span className="font-semibold">Demo Transactions Only:</span> All approvals, package allocations, and ledger entries currently operate in verification demonstration mode. Do not enable live real-money operations until legal, regulatory, and payment-provider requirements are verified.
+          <span className="font-semibold">Demo Transactions Only:</span> All approvals, package allocations, and balance records currently operate in verification demonstration mode. Do not enable live real-money operations until legal, regulatory, and payment-provider requirements are verified.
         </div>
 
         {/* One-Click Database Setup Banner when tables (e.g. payment_instructions) are missing */}
@@ -443,7 +529,7 @@ export function AdminDashboard({
                   <span>Supabase Database Tables Pending (`payment_instructions`, `investment_packages`, etc.)</span>
                 </div>
                 <p className="text-xs text-red-800 leading-relaxed">
-                  Saving bKash, Nagad, or Rocket numbers requires running <span className="font-mono">supabase/schema.sql</span> once in your Supabase Dashboard → <span className="font-semibold">SQL Editor</span>. Download or copy the SQL below, paste or import it in Supabase SQL Editor &amp; click <span className="font-semibold">Run</span>, then click <span className="font-semibold">Refresh Overview</span>.
+                  Saving bKash, Nagad, or Rocket numbers requires running <span className="font-mono">supabase/schema.sql</span> once in your Supabase Dashboard → <span className="font-semibold">SQL Editor</span>. Download or copy the SQL below, paste or import it in Supabase SQL Editor &amp; click <span className="font-semibold">Run</span>, then click <span className="font-semibold">Refresh Data</span>.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -602,7 +688,9 @@ export function AdminDashboard({
             <div className="font-mono tabular-nums text-2xl font-bold text-blue-700 mt-1.5">
               {formatCurrency(totalVerifiedBalances)}
             </div>
-            <div className="text-xs text-slate-500 mt-1">{ledger.length} ledger records</div>
+            <div className="text-xs text-slate-500 mt-1">
+              {formatCurrency(totalCommissionsPaid)} paid in 35% referrals
+            </div>
           </div>
         </div>
 
@@ -885,7 +973,7 @@ export function AdminDashboard({
                   type="search"
                   value={memberSearch}
                   onChange={(e) => setMemberSearch(e.target.value)}
-                  placeholder="Search name, email, or phone..."
+                  placeholder="Search name, email, phone, or ref code..."
                   className="w-full pl-9 pr-3.5 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
                 />
               </div>
@@ -895,6 +983,7 @@ export function AdminDashboard({
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
                     <th className="py-3 px-4 font-medium">Member</th>
+                    <th className="py-3 px-4 font-medium">Ref Code</th>
                     <th className="py-3 px-4 font-medium">Phone</th>
                     <th className="py-3 px-4 font-medium">Role</th>
                     <th className="py-3 px-4 font-medium text-right">Verified Balance</th>
@@ -909,6 +998,9 @@ export function AdminDashboard({
                       <td className="py-3 px-4">
                         <div className="font-medium text-slate-900">{m.full_name || '—'}</div>
                         <div className="text-xs text-slate-500">{m.email}</div>
+                      </td>
+                      <td className="py-3 px-4 font-mono text-xs font-semibold text-blue-700">
+                        {m.referral_code || '—'}
                       </td>
                       <td className="py-3 px-4 font-mono text-xs text-slate-700">{m.phone || '—'}</td>
                       <td className="py-3 px-4">
@@ -1128,6 +1220,72 @@ export function AdminDashboard({
           </section>
         )}
 
+        {tab === 'allocations' && (
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900">
+                  35% Referral Commission Payouts
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Automatic 35% commissions credited when referred members purchase packages.
+                </p>
+              </div>
+              <div className="font-mono tabular-nums text-sm font-bold text-emerald-700">
+                Total: {formatCurrency(totalCommissionsPaid)}
+              </div>
+            </div>
+            {referralCommissions.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-600">
+                No referral commission payouts recorded yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+                      <th className="py-3 px-4 font-medium">Date</th>
+                      <th className="py-3 px-4 font-medium">Referrer</th>
+                      <th className="py-3 px-4 font-medium">Referred Buyer</th>
+                      <th className="py-3 px-4 font-medium">Package</th>
+                      <th className="py-3 px-4 font-medium text-right">Package Price</th>
+                      <th className="py-3 px-4 font-medium text-right">35% Commission</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {referralCommissions.map((c) => {
+                      const referrer = memberLookup.get(c.referrer_id);
+                      const buyer = memberLookup.get(c.referred_user_id);
+                      return (
+                        <tr key={c.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
+                            {formatDateTime(c.created_at)}
+                          </td>
+                          <td className="py-3 px-4 text-xs">
+                            <div className="font-medium text-slate-900">{referrer?.full_name || 'Member'}</div>
+                            <div className="text-slate-500">{referrer?.email || c.referrer_id}</div>
+                          </td>
+                          <td className="py-3 px-4 text-xs">
+                            <div className="font-medium text-slate-900">{buyer?.full_name || 'Member'}</div>
+                            <div className="text-slate-500">{buyer?.email || c.referred_user_id}</div>
+                          </td>
+                          <td className="py-3 px-4 font-medium text-slate-900">{c.package_name}</td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-700">
+                            {formatCurrency(c.package_price)}
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-emerald-700">
+                            +{formatCurrency(c.commission_amount)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
         {/* TAB: PAYMENT INSTRUCTIONS */}
         {tab === 'instructions' && (
           <section className="space-y-4">
@@ -1196,117 +1354,208 @@ export function AdminDashboard({
           </section>
         )}
 
-        {/* TAB: ALL TRANSACTIONS LEDGER */}
-        {tab === 'ledger' && (
-          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        {/* TAB: CUSTOMER SUPPORT */}
+        {tab === 'support' && (
+          <div className="space-y-6">
+            <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-5">
               <div>
-                <h2 className="font-display text-base font-bold text-slate-900">Global Immutable Financial Ledger</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Complete system-wide audit trail across all members.</p>
+                <h2 className="font-display text-base font-bold text-slate-900">
+                  Customer Support Channels &amp; Public Notice
+                </h2>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Configure your live WhatsApp, Telegram, Support Email, and support notice displayed on the landing page and Member Support tab.
+                </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  aria-label="Filter ledger by entry type"
-                  value={ledgerTypeFilter}
-                  onChange={(e) => setLedgerTypeFilter(e.target.value)}
-                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
-                >
-                  <option value="all">All Entry Types</option>
-                  <option value="deposit_credit">Deposit Credit</option>
-                  <option value="withdrawal_hold">Withdrawal Hold</option>
-                  <option value="withdrawal_refund">Withdrawal Refund</option>
-                  <option value="package_purchase">Package Purchase</option>
-                  <option value="package_reward">Package Daily Reward</option>
-                </select>
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="search"
-                    value={ledgerSearch}
-                    onChange={(e) => setLedgerSearch(e.target.value)}
-                    placeholder="Filter member or description..."
-                    className="pl-8 pr-3 py-2 text-xs border border-slate-300 rounded-lg"
+
+              <form onSubmit={handleSaveSupportSettings} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label htmlFor="adm-sup-title" className="block text-xs font-medium text-slate-700 mb-1.5">
+                      Support Desk Title
+                    </label>
+                    <input
+                      id="adm-sup-title"
+                      type="text"
+                      required
+                      maxLength={100}
+                      value={supportForm.support_title}
+                      onChange={(e) => setSupportForm({ ...supportForm, support_title: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="adm-sup-hours" className="block text-xs font-medium text-slate-700 mb-1.5">
+                      Service Hours
+                    </label>
+                    <input
+                      id="adm-sup-hours"
+                      type="text"
+                      maxLength={100}
+                      value={supportForm.support_hours}
+                      onChange={(e) => setSupportForm({ ...supportForm, support_hours: e.target.value })}
+                      placeholder="e.g. 9:00 AM - 10:00 PM (GMT+6)"
+                      className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label htmlFor="adm-sup-wa" className="block text-xs font-medium text-slate-700 mb-1.5">
+                      WhatsApp Number
+                    </label>
+                    <input
+                      id="adm-sup-wa"
+                      type="text"
+                      maxLength={32}
+                      value={supportForm.whatsapp_number}
+                      onChange={(e) => setSupportForm({ ...supportForm, whatsapp_number: e.target.value })}
+                      placeholder="+8801XXXXXXXXX"
+                      className="w-full px-3.5 py-2.5 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="adm-sup-tg" className="block text-xs font-medium text-slate-700 mb-1.5">
+                      Telegram Link or @Username
+                    </label>
+                    <input
+                      id="adm-sup-tg"
+                      type="text"
+                      maxLength={160}
+                      value={supportForm.telegram_link}
+                      onChange={(e) => setSupportForm({ ...supportForm, telegram_link: e.target.value })}
+                      placeholder="https://t.me/smartinvest_support"
+                      className="w-full px-3.5 py-2.5 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="adm-sup-email" className="block text-xs font-medium text-slate-700 mb-1.5">
+                      Support Email
+                    </label>
+                    <input
+                      id="adm-sup-email"
+                      type="email"
+                      maxLength={120}
+                      value={supportForm.support_email}
+                      onChange={(e) => setSupportForm({ ...supportForm, support_email: e.target.value })}
+                      placeholder="support@example.com"
+                      className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="adm-sup-notice" className="block text-xs font-medium text-slate-700 mb-1.5">
+                    Support Notice / Instructions
+                  </label>
+                  <textarea
+                    id="adm-sup-notice"
+                    rows={3}
+                    maxLength={600}
+                    value={supportForm.notice_text}
+                    onChange={(e) => setSupportForm({ ...supportForm, notice_text: e.target.value })}
+                    className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    exportRowsToCsv(
-                      'smart-invest-admin-ledger.csv',
-                      ['Timestamp', 'Member Email', 'Entry Type', 'Direction', 'Amount', 'Balance Before', 'Balance After', 'Description'],
-                      filteredLedger.map((entry) => [
-                        entry.created_at,
-                        memberLookup.get(entry.user_id)?.email || entry.user_id,
-                        entry.entry_type,
-                        entry.direction,
-                        entry.amount,
-                        entry.balance_before,
-                        entry.balance_after,
-                        entry.description,
-                      ])
-                    )
-                  }
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Export CSV</span>
-                </button>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                  <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={supportForm.is_active}
+                      onChange={(e) => setSupportForm({ ...supportForm, is_active: e.target.checked })}
+                      className="w-4 h-4 rounded border-slate-300 text-blue-700"
+                    />
+                    <span>Show Customer Support contacts publicly &amp; in Member Portal</span>
+                  </label>
+
+                  <button
+                    type="submit"
+                    disabled={actionBusy}
+                    className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 disabled:opacity-60 text-white text-xs font-semibold rounded-lg cursor-pointer self-start sm:self-auto"
+                  >
+                    {actionBusy ? 'Saving...' : 'Save Support Settings'}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            {/* Support Tickets Queue */}
+            <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-base font-bold text-slate-900">Member Support Tickets</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Review and respond directly to member inquiries.
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg self-start">
+                  {(['all', 'open', 'replied', 'closed'] as const).map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setTicketFilter(st)}
+                      className={`px-3 py-1 text-xs font-medium rounded-md capitalize cursor-pointer ${
+                        ticketFilter === st ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                      }`}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-            {filteredLedger.length === 0 ? (
-              <div className="p-8 text-center text-sm text-slate-600">No ledger entries match your filter.</div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
-                      <th className="py-3 px-4 font-medium">Timestamp</th>
-                      <th className="py-3 px-4 font-medium">Member</th>
-                      <th className="py-3 px-4 font-medium">Description</th>
-                      <th className="py-3 px-4 font-medium">Direction</th>
-                      <th className="py-3 px-4 font-medium text-right">Amount</th>
-                      <th className="py-3 px-4 font-medium text-right">Before</th>
-                      <th className="py-3 px-4 font-medium text-right">After</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredLedger.map((entry) => {
-                      const member = memberLookup.get(entry.user_id);
-                      return (
-                        <tr key={entry.id} className="hover:bg-slate-50">
-                          <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
-                            {formatDateTime(entry.created_at)}
-                          </td>
-                          <td className="py-3 px-4 text-xs">
-                            <div className="font-medium text-slate-900">{member?.full_name || 'Member'}</div>
-                            <div className="text-slate-500">{member?.email || entry.user_id}</div>
-                          </td>
-                          <td className="py-3 px-4 text-slate-800">{entry.description}</td>
-                          <td className="py-3 px-4">
-                            <StatusLabel status={entry.direction} />
-                          </td>
-                          <td
-                            className={`py-3 px-4 text-right font-mono tabular-nums font-medium ${
-                              entry.direction === 'credit' ? 'text-emerald-700' : 'text-red-700'
-                            }`}
+
+              {filteredTickets.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-600">
+                  No {ticketFilter === 'all' ? '' : ticketFilter} support tickets found.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {filteredTickets.map((t) => {
+                    const sender = memberLookup.get(t.user_id);
+                    return (
+                      <div key={t.id} className="p-5 space-y-3 hover:bg-slate-50/60">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2.5">
+                              <h3 className="text-sm font-semibold text-slate-900">{t.subject}</h3>
+                              <StatusLabel status={t.status} />
+                            </div>
+                            <div className="text-xs text-slate-500 mt-0.5">
+                              {sender?.full_name || 'Member'} · {sender?.email || t.user_id} ·{' '}
+                              {formatDateTime(t.created_at)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReplyingTicket(t);
+                              setTicketReplyText(t.admin_reply || '');
+                              setTicketReplyStatus(t.status === 'closed' ? 'closed' : 'replied');
+                            }}
+                            className="self-start px-3.5 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer whitespace-nowrap"
                           >
-                            {entry.direction === 'credit' ? '+' : '-'}
-                            {formatCurrency(entry.amount)}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono tabular-nums text-xs text-slate-600">
-                            {formatCurrency(entry.balance_before)}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono tabular-nums text-xs font-semibold text-slate-900">
-                            {formatCurrency(entry.balance_after)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
+                            {t.admin_reply ? 'Update Reply' : 'Reply'}
+                          </button>
+                        </div>
+
+                        <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line">{t.message}</p>
+
+                        {t.admin_reply && (
+                          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-1">
+                            <div className="text-xs font-semibold text-blue-900">
+                              Administrator Reply {t.replied_at ? `· ${formatDateTime(t.replied_at)}` : ''}
+                            </div>
+                            <p className="text-xs text-blue-900 leading-relaxed whitespace-pre-line">{t.admin_reply}</p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
         )}
       </div>
 
@@ -1714,11 +1963,11 @@ export function AdminDashboard({
                     </div>
                   </div>
 
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-800 mb-2">Recent Member Ledger</h4>
+              <div>
+                    <h4 className="text-xs font-semibold text-slate-800 mb-2">Recent Account Activity</h4>
                     {mLedger.length === 0 ? (
                       <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3">
-                        No ledger entries for this member.
+                        No recent account activity for this member.
                       </p>
                     ) : (
                       <div className="border border-slate-200 rounded-lg overflow-hidden">
@@ -1792,6 +2041,85 @@ export function AdminDashboard({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Support Ticket Reply Modal */}
+      {replyingTicket && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true">
+          <form
+            onSubmit={handleConfirmTicketReply}
+            className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-6 space-y-4 shadow-xl"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-3">
+              <div>
+                <div className="text-xs font-semibold text-blue-700">Customer Support Reply</div>
+                <h3 className="font-display text-base font-bold text-slate-900 mt-0.5">
+                  {replyingTicket.subject}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplyingTicket(null)}
+                aria-label="Close support reply modal"
+                className="p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-700 whitespace-pre-line">
+              {replyingTicket.message}
+            </div>
+
+            <div>
+              <label htmlFor="adm-ticket-reply" className="block text-xs font-medium text-slate-700 mb-1.5">
+                Administrator Reply
+              </label>
+              <textarea
+                id="adm-ticket-reply"
+                rows={4}
+                required={ticketReplyStatus !== 'closed'}
+                maxLength={2000}
+                value={ticketReplyText}
+                onChange={(e) => setTicketReplyText(e.target.value)}
+                placeholder="Write a clear, helpful response to the member..."
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="adm-ticket-status" className="block text-xs font-medium text-slate-700 mb-1.5">
+                Ticket Status
+              </label>
+              <select
+                id="adm-ticket-status"
+                value={ticketReplyStatus}
+                onChange={(e) => setTicketReplyStatus(e.target.value as 'replied' | 'closed')}
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+              >
+                <option value="replied">Replied (Open for reference)</option>
+                <option value="closed">Closed (Resolved)</option>
+              </select>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setReplyingTicket(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={actionBusy}
+                className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
+              >
+                {actionBusy ? 'Saving...' : 'Send Reply'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

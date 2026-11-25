@@ -52,3 +52,44 @@ export function exportRowsToCsv(filename: string, headers: string[], rows: unkno
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+export function sanitizeWhatsAppUrl(raw: string | null | undefined): string | null {
+  const digits = String(raw ?? '').replace(/[^\d]/g, '');
+  if (digits.length < 7 || digits.length > 16) return null;
+  return `https://wa.me/${digits}`;
+}
+
+export function sanitizeTelegramUrl(raw: string | null | undefined): string | null {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed) return null;
+
+  if (/^@?[a-zA-Z0-9_]{3,64}$/.test(trimmed)) {
+    const handle = trimmed.replace(/^@/, '');
+    return `https://t.me/${handle}`;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (
+      parsed.protocol === 'https:' &&
+      (parsed.hostname === 't.me' || parsed.hostname === 'telegram.me') &&
+      parsed.pathname.length > 1
+    ) {
+      return `https://t.me${parsed.pathname}`;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+export function sanitizeEmailAddress(raw: string | null | undefined): string | null {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed || trimmed.length > 120) return null;
+  if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+

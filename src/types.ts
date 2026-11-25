@@ -2,12 +2,14 @@ export type PaymentMethod = 'bKash' | 'Nagad' | 'Rocket';
 export type RequestStatus = 'pending' | 'approved' | 'rejected';
 export type UserRole = 'member' | 'admin';
 export type AccountStatus = 'active' | 'deactivated';
+export type SupportTicketStatus = 'open' | 'replied' | 'closed';
 export type LedgerEntryType =
   | 'deposit_credit'
   | 'withdrawal_hold'
   | 'withdrawal_refund'
   | 'package_purchase'
-  | 'package_reward';
+  | 'package_reward'
+  | 'referral_commission';
 
 export interface Profile {
   id: string;
@@ -17,6 +19,8 @@ export interface Profile {
   role: UserRole;
   status: AccountStatus;
   available_balance: number;
+  referral_code: string;
+  referred_by?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -112,6 +116,49 @@ export interface LedgerEntry {
   created_at: string;
 }
 
+export interface ReferralMemberSummary {
+  id: string;
+  label: string;
+  joined_at: string;
+}
+
+export interface ReferralCommission {
+  id: string;
+  referrer_id: string;
+  referred_user_id: string;
+  purchase_id: string;
+  package_name: string;
+  package_price: number;
+  commission_rate: number;
+  commission_amount: number;
+  created_at: string;
+}
+
+export interface SupportSettings {
+  id: number;
+  support_title: string;
+  support_hours: string;
+  whatsapp_number: string;
+  telegram_link: string;
+  support_email: string;
+  notice_text: string;
+  is_active: boolean;
+  updated_at?: string;
+}
+
+export interface SupportTicket {
+  id: string;
+  user_id: string;
+  subject: string;
+  message: string;
+  status: SupportTicketStatus;
+  admin_reply: string | null;
+  replied_by: string | null;
+  replied_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MemberBootstrapData {
   profile: Profile;
   packages: InvestmentPackage[];
@@ -120,6 +167,10 @@ export interface MemberBootstrapData {
   withdrawals: WithdrawalRequest[];
   purchases: PackagePurchase[];
   ledger: LedgerEntry[];
+  referrals: ReferralMemberSummary[];
+  referralCommissions: ReferralCommission[];
+  supportSettings: SupportSettings | null;
+  supportTickets: SupportTicket[];
 }
 
 export interface AdminOverviewData {
@@ -130,6 +181,9 @@ export interface AdminOverviewData {
   paymentInstructions: PaymentInstruction[];
   purchases: PackagePurchase[];
   ledger: LedgerEntry[];
+  referralCommissions: ReferralCommission[];
+  supportSettings: SupportSettings | null;
+  supportTickets: SupportTicket[];
   schemaPending?: boolean;
 }
 

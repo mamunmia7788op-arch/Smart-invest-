@@ -6,16 +6,26 @@ import type { SystemHealth } from '../types';
 interface AuthViewProps {
   health: SystemHealth | null;
   supabaseReady: boolean;
+  initialReferralCode?: string;
   onSuccess: () => void;
   onCancel: () => void;
 }
 
-export function AuthView({ health, supabaseReady, onSuccess, onCancel }: AuthViewProps) {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+export function AuthView({
+  health,
+  supabaseReady,
+  initialReferralCode = '',
+  onSuccess,
+  onCancel,
+}: AuthViewProps) {
+  const [mode, setMode] = useState<'login' | 'register'>(() =>
+    initialReferralCode.trim() ? 'register' : 'login'
+  );
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
+  const [referralCode, setReferralCode] = useState(initialReferralCode.trim().toUpperCase());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -63,6 +73,7 @@ export function AuthView({ health, supabaseReady, onSuccess, onCancel }: AuthVie
         if (signInError) throw signInError;
         onSuccess();
       } else {
+        const cleanReferralCode = referralCode.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
         const { data, error: signUpError } = await client.auth.signUp({
           email: trimmedEmail,
           password,
@@ -71,6 +82,7 @@ export function AuthView({ health, supabaseReady, onSuccess, onCancel }: AuthVie
             data: {
               full_name: fullName.trim(),
               phone: phone.trim(),
+              ...(cleanReferralCode ? { referral_code: cleanReferralCode } : {}),
             },
           },
         });
@@ -105,8 +117,8 @@ export function AuthView({ health, supabaseReady, onSuccess, onCancel }: AuthVie
           </h1>
           <p className="text-sm text-slate-600">
             {mode === 'login'
-              ? 'Access your verified balance, packages, and transaction ledger.'
-              : 'Register a member account. Balances begin at ৳0.00 until deposits are verified.'}
+              ? 'Access your verified balance, investment packages, referrals, and support.'
+              : 'Register a member account and get an instant ৳100.00 welcome bonus credited straight to your balance.'}
           </p>
         </div>
 
@@ -171,6 +183,12 @@ export function AuthView({ health, supabaseReady, onSuccess, onCancel }: AuthVie
         <form onSubmit={handleSubmit} className="space-y-4">
           {mode === 'register' && (
             <>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-3.5 py-2.5 text-xs text-blue-900 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-blue-700" />
+                <span>
+                  <span className="font-semibold">Instant ৳100.00 Welcome Bonus:</span> Credited automatically to your available balance upon registration.
+                </span>
+              </div>
               <div>
                 <label htmlFor="auth-fullname" className="block text-xs font-medium text-slate-700 mb-1.5">
                   Full Name
@@ -197,6 +215,20 @@ export function AuthView({ health, supabaseReady, onSuccess, onCancel }: AuthVie
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="01XXXXXXXXX"
                   className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="auth-referral" className="block text-xs font-medium text-slate-700 mb-1.5">
+                  Referral Code (Optional · 35% Partner Program)
+                </label>
+                <input
+                  id="auth-referral"
+                  type="text"
+                  value={referralCode}
+                  onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. SI4A9F1C"
+                  className="w-full px-3.5 py-2.5 text-sm font-mono uppercase border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
                 />
               </div>
             </>
@@ -256,7 +288,7 @@ export function AuthView({ health, supabaseReady, onSuccess, onCancel }: AuthVie
             onClick={onCancel}
             className="hover:text-slate-900 font-medium cursor-pointer"
           >
-            ← Back to Overview
+            ← Back to Home
           </button>
           <span className="text-slate-400">Encrypted Supabase Session</span>
         </div>

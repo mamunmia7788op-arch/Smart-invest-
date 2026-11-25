@@ -165,7 +165,7 @@ export function AdminLoginView({
             onClick={onCancel}
             className="hover:text-slate-900 font-medium cursor-pointer"
           >
-            ← Back to Overview
+            ← Back to Home
           </button>
           <button
             type="button"

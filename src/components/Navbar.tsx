@@ -34,15 +34,6 @@ export function Navbar({ route, onNavigate, profile, isAuthenticated, onSignOut 
         <nav aria-label="Primary navigation" className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600">
           <button
             type="button"
-            onClick={() => handleLink('home')}
-            className={`whitespace-nowrap shrink-0 py-1 transition-colors cursor-pointer hover:text-slate-900 ${
-              route === 'home' ? 'text-blue-700 font-semibold' : ''
-            }`}
-          >
-            Overview
-          </button>
-          <button
-            type="button"
             onClick={() => handleLink('home', 'packages')}
             className="whitespace-nowrap shrink-0 py-1 transition-colors cursor-pointer hover:text-slate-900"
           >
@@ -54,6 +45,13 @@ export function Navbar({ route, onNavigate, profile, isAuthenticated, onSignOut 
             className="whitespace-nowrap shrink-0 py-1 transition-colors cursor-pointer hover:text-slate-900"
           >
             Funding
+          </button>
+          <button
+            type="button"
+            onClick={() => handleLink('home', 'support')}
+            className="whitespace-nowrap shrink-0 py-1 transition-colors cursor-pointer hover:text-slate-900"
+          >
+            Support
           </button>
           {isAuthenticated && (
             <button
@@ -119,13 +117,6 @@ export function Navbar({ route, onNavigate, profile, isAuthenticated, onSignOut 
         <div className="md:hidden border-t border-slate-200 bg-white px-4 py-4 space-y-2">
           <button
             type="button"
-            onClick={() => handleLink('home')}
-            className="block w-full text-left px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 rounded-lg"
-          >
-            Overview
-          </button>
-          <button
-            type="button"
             onClick={() => handleLink('home', 'packages')}
             className="block w-full text-left px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 rounded-lg"
           >
@@ -137,6 +128,13 @@ export function Navbar({ route, onNavigate, profile, isAuthenticated, onSignOut 
             className="block w-full text-left px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 rounded-lg"
           >
             Funding
+          </button>
+          <button
+            type="button"
+            onClick={() => handleLink('home', 'support')}
+            className="block w-full text-left px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 rounded-lg"
+          >
+            Support
           </button>
           {isAuthenticated && (
             <button

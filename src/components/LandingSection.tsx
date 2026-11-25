@@ -1,25 +1,48 @@
 import { useState } from 'react';
-import { AlertTriangle, ArrowRight, Building2, Check, FileText, Lock, ShieldCheck, Wallet } from 'lucide-react';
-import { formatCurrency } from '../lib/format';
-import type { InvestmentPackage, Profile } from '../types';
+import {
+  AlertTriangle,
+  ArrowRight,
+  Building2,
+  Check,
+  FileText,
+  Headphones,
+  Lock,
+  Mail,
+  MessageCircle,
+  Send,
+  ShieldCheck,
+  Users,
+  Wallet,
+} from 'lucide-react';
+import {
+  formatCurrency,
+  sanitizeEmailAddress,
+  sanitizeTelegramUrl,
+  sanitizeWhatsAppUrl,
+} from '../lib/format';
+import type { InvestmentPackage, Profile, SupportSettings } from '../types';
 
 interface LandingSectionProps {
   packages: InvestmentPackage[];
+  supportSettings?: SupportSettings | null;
   isAuthenticated: boolean;
   profile: Profile | null;
   onSelectPackage: (pkg: InvestmentPackage) => void;
   onNavigateAuth: () => void;
   onNavigateDashboard: () => void;
+  onNavigateSupport: () => void;
   onNavigateAdminLogin: () => void;
 }
 
 export function LandingSection({
   packages,
+  supportSettings,
   isAuthenticated,
   profile,
   onSelectPackage,
   onNavigateAuth,
   onNavigateDashboard,
+  onNavigateSupport,
   onNavigateAdminLogin,
 }: LandingSectionProps) {
   const [expandedTermsId, setExpandedTermsId] = useState<string | null>(null);
@@ -33,7 +56,7 @@ export function LandingSection({
           <div className="lg:col-span-6 flex flex-col justify-between space-y-8">
             <div className="space-y-5">
               <div className="text-xs font-semibold tracking-wide text-blue-700">
-                Structured Capital Packages · Verified MFS Accounting · Immutable Ledger
+                ৳100 Instant Signup Bonus · Verified MFS Accounting · 35% Referral Commission
               </div>
               <h1
                 className="font-display font-bold tracking-tight text-slate-900 leading-[1.12]"
@@ -42,7 +65,7 @@ export function LandingSection({
                 Disciplined Investment Packages Built on Verified Balances
               </h1>
               <p className="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl">
-                SMART INVEST provides transparent fixed-duration investment packages, manual verification for bKash, Nagad, and Rocket deposits, and a strict atomic transaction ledger.
+                SMART INVEST provides transparent fixed-duration investment packages, an instant ৳100 welcome bonus for every new member, manual verification for bKash, Nagad, and Rocket deposits, and strict atomic balance protection.
               </p>
             </div>
 
@@ -99,7 +122,7 @@ export function LandingSection({
               ) : (
                 <div className="w-full h-full bg-gradient-to-br from-blue-900 via-slate-900 to-blue-800 flex flex-col items-center justify-center p-8 text-white text-center">
                   <Building2 className="w-12 h-12 text-blue-300 mb-3" />
-                  <p className="font-display text-lg font-semibold">SMART INVEST Institutional Ledger</p>
+                  <p className="font-display text-lg font-semibold">SMART INVEST Verified Capital Portal</p>
                   <p className="text-sm text-blue-200 mt-1 max-w-sm">
                     Verified deposits, row-locked balances, and transparent package durations.
                   </p>
@@ -127,9 +150,9 @@ export function LandingSection({
             <p className="text-xs text-slate-600 mt-1">PostgreSQL row locks prevent duplicate withdrawals and double spending.</p>
           </div>
           <div className="p-5">
-            <div className="text-xs font-medium text-slate-500">Audit Trail</div>
-            <div className="font-display text-base font-semibold text-slate-900 mt-1">Immutable Ledger</div>
-            <p className="text-xs text-slate-600 mt-1">Append-only credit and debit history for every member.</p>
+            <div className="text-xs font-medium text-slate-500">Partner Program</div>
+            <div className="font-display text-base font-semibold text-slate-900 mt-1">35% Referral Commission</div>
+            <p className="text-xs text-slate-600 mt-1">Earn 35% instant balance credit when invited members buy packages.</p>
           </div>
         </div>
       </section>
@@ -289,12 +312,89 @@ export function LandingSection({
                 </p>
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
-                <FileText className="w-5 h-5 text-blue-700" aria-hidden="true" />
-                <h3 className="font-display text-base font-bold text-slate-900">04. Immutable Financial Ledger</h3>
+                <Users className="w-5 h-5 text-blue-700" aria-hidden="true" />
+                <h3 className="font-display text-base font-bold text-slate-900">04. 35% Referral & Daily Claims</h3>
                 <p className="text-sm text-slate-600 leading-relaxed">
-                  Every approved deposit, withdrawal hold, refund, and package purchase records before-and-after balances in an append-only PostgreSQL ledger.
+                  Share your personal referral link to receive 35% commission on partner package allocations and claim scheduled daily demo payouts every 24 hours.
                 </p>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Customer Support Section */}
+      <section id="support" className="border-t border-slate-200 bg-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+            <div className="space-y-2 max-w-2xl">
+              <div className="inline-flex items-center gap-2 text-xs font-semibold text-blue-700">
+                <Headphones className="w-4 h-4" aria-hidden="true" />
+                <span>{supportSettings?.support_title || 'SMART INVEST Customer Support'}</span>
+              </div>
+              <h2 className="font-display text-xl sm:text-2xl font-bold text-slate-900">
+                Need Assistance With Deposits, Packages, or Withdrawals?
+              </h2>
+              <p className="text-sm text-slate-600 leading-relaxed">
+                {supportSettings?.notice_text ||
+                  'Contact our support team directly or submit a support ticket from your member dashboard for deposit verification, referral questions, or payout updates.'}
+              </p>
+              {supportSettings?.support_hours && (
+                <div className="text-xs text-slate-500 font-medium">
+                  Service Hours: <span className="text-slate-800">{supportSettings.support_hours}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              {(() => {
+                const waUrl = sanitizeWhatsAppUrl(supportSettings?.whatsapp_number);
+                const tgUrl = sanitizeTelegramUrl(supportSettings?.telegram_link);
+                const emailAddr = sanitizeEmailAddress(supportSettings?.support_email);
+                return (
+                  <>
+                    {waUrl && (
+                      <a
+                        href={waUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors"
+                      >
+                        <MessageCircle className="w-4 h-4" />
+                        <span>WhatsApp Support</span>
+                      </a>
+                    )}
+                    {tgUrl && (
+                      <a
+                        href={tgUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold rounded-lg transition-colors"
+                      >
+                        <Send className="w-4 h-4" />
+                        <span>Telegram Support</span>
+                      </a>
+                    )}
+                    {emailAddr && (
+                      <a
+                        href={`mailto:${emailAddr}`}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg transition-colors"
+                      >
+                        <Mail className="w-4 h-4" />
+                        <span>{emailAddr}</span>
+                      </a>
+                    )}
+                  </>
+                );
+              })()}
+              <button
+                type="button"
+                onClick={isAuthenticated ? onNavigateSupport : onNavigateAuth}
+                className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+              >
+                <Headphones className="w-4 h-4" />
+                <span>{isAuthenticated ? 'Open Support Desk' : 'Sign In for Support'}</span>
+              </button>
             </div>
           </div>
         </div>

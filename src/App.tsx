@@ -15,6 +15,7 @@ import type {
   AppRoute,
   InvestmentPackage,
   MemberBootstrapData,
+  SupportSettings,
   SystemHealth,
 } from './types';
 
@@ -42,15 +43,31 @@ function pathnameFromRoute(route: AppRoute): string {
   }
 }
 
+function readInitialReferralCode(): string {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = (params.get('ref') || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    if (fromUrl) {
+      sessionStorage.setItem('smart_invest_ref', fromUrl);
+      return fromUrl;
+    }
+    return (sessionStorage.getItem('smart_invest_ref') || '').trim().toUpperCase();
+  } catch {
+    return '';
+  }
+}
+
 export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromPathname(window.location.pathname));
-  const [memberTab, setMemberTab] = useState<MemberTab>('overview');
+  const [memberTab, setMemberTab] = useState<MemberTab>('packages');
+  const [initialReferralCode] = useState<string>(() => readInitialReferralCode());
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [supabaseReady, setSupabaseReady] = useState<boolean>(() =>
     isSupabaseConfigured || Boolean(getSupabaseClient())
   );
   const [session, setSession] = useState<Session | null>(null);
   const [publicPackages, setPublicPackages] = useState<InvestmentPackage[]>(CANONICAL_PACKAGE_CATALOG);
+  const [publicSupportSettings, setPublicSupportSettings] = useState<SupportSettings | null>(null);
 
   const [memberData, setMemberData] = useState<MemberBootstrapData | null>(null);
   const [memberLoading, setMemberLoading] = useState(false);
@@ -111,6 +128,15 @@ export default function App() {
       } catch {
         // Keep canonical package catalog for public viewing
       }
+
+      try {
+        const supRes = await apiRequest<{ supportSettings: SupportSettings | null }>('/api/support');
+        if (supRes.supportSettings) {
+          setPublicSupportSettings(supRes.supportSettings);
+        }
+      } catch {
+        // Ignore transient support settings failure on boot
+      }
     })();
   }, []);
 
@@ -141,7 +167,7 @@ export default function App() {
       });
       setAdminData(payload);
     } catch (err) {
-      setAdminError(err instanceof Error ? err.message : 'Unable to load admin overview.');
+      setAdminError(err instanceof Error ? err.message : 'Unable to load admin dashboard.');
     } finally {
       setAdminLoading(false);
     }
@@ -253,7 +279,7 @@ export default function App() {
     setPurchaseToast(`Allocated ${pkg.name} from your verified available balance.`);
     await loadMemberBootstrap();
     navigateTo('dashboard');
-    setMemberTab('overview');
+    setMemberTab('packages');
   };
 
   const isAuthenticated = Boolean(session);
@@ -299,11 +325,16 @@ export default function App() {
         {effectiveRoute === 'home' && (
           <LandingSection
             packages={displayedPackages}
+            supportSettings={memberData?.supportSettings ?? publicSupportSettings}
             isAuthenticated={isAuthenticated}
             profile={currentProfile}
             onSelectPackage={(pkg) => setSelectedPkg(pkg)}
             onNavigateAuth={() => handleNavigate('auth')}
             onNavigateDashboard={() => handleNavigate('dashboard')}
+            onNavigateSupport={() => {
+              setMemberTab('support');
+              handleNavigate('dashboard');
+            }}
             onNavigateAdminLogin={() => handleNavigate('admin')}
           />
         )}
@@ -312,6 +343,7 @@ export default function App() {
           <AuthView
             health={health}
             supabaseReady={supabaseReady}
+            initialReferralCode={initialReferralCode}
             onSuccess={() => {
               navigateTo('dashboard');
               void loadMemberBootstrap();

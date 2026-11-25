@@ -25,7 +25,7 @@ export const CANONICAL_PACKAGE_CATALOG: InvestmentPackage[] = [
     duration_days: 60,
     daily_return_rate: 30,
     summary:
-      'Balanced 60-day diversified portfolio allocation with periodic reporting inside your member ledger.',
+      'Balanced 60-day diversified portfolio allocation with periodic reporting inside your member portal.',
     terms_and_conditions:
       '1. Capital Participation: Purchasing the Silver Package allocates 10,000 BDT from your verified available balance for a 60-day term.\n2. Risk Disclosure: Returns are variable and depend on market conditions. Past outcomes do not guarantee future performance.\n3. Lock-In Period: Allocated principal is committed for the full 60-day duration.\n4. Regulatory Compliance: Live operations remain subject to applicable local financial, KYC, and payment-provider authorization.',
     risk_level: 'Moderate',
@@ -55,7 +55,7 @@ export const CANONICAL_PACKAGE_CATALOG: InvestmentPackage[] = [
     duration_days: 180,
     daily_return_rate: 30,
     summary:
-      'Longer-horizon 180-day institutional-style allocation with comprehensive ledger auditability.',
+      'Longer-horizon 180-day institutional-style allocation with comprehensive balance auditability.',
     terms_and_conditions:
       '1. Capital Participation: Purchasing the Premium Package allocates 50,000 BDT from your verified available balance for a 180-day term.\n2. Risk Disclosure: Higher-horizon strategies carry market, liquidity, and counterparty risks. No return is guaranteed.\n3. Lock-In Period: Funds remain locked for the 180-day duration prior to settlement review.\n4. Regulatory Compliance: Live operations remain subject to applicable local financial, KYC, and payment-provider authorization.',
     risk_level: 'High',
