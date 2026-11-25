@@ -66,7 +66,7 @@ export function Navbar({ route, onNavigate, profile, isAuthenticated, onSignOut 
               Dashboard
             </button>
           )}
-          {profile?.role === 'admin' && (
+          {isAuthenticated && profile?.role === 'admin' && (
             <button
               type="button"
               onClick={() => handleLink('admin')}
@@ -147,7 +147,7 @@ export function Navbar({ route, onNavigate, profile, isAuthenticated, onSignOut 
               Member Dashboard
             </button>
           )}
-          {profile?.role === 'admin' && (
+          {isAuthenticated && profile?.role === 'admin' && (
             <button
               type="button"
               onClick={() => handleLink('admin')}

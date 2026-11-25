@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { getSupabaseClient, initSupabaseClient } from './supabase';
 
 export class ApiError extends Error {
   status: number;
@@ -25,10 +25,11 @@ export async function apiRequest<T>(
   }
 
   if (requireAuth) {
-    if (!supabase) {
+    const client = getSupabaseClient() ?? (await initSupabaseClient());
+    if (!client) {
       throw new ApiError('Supabase authentication is not configured.', 503);
     }
-    const { data } = await supabase.auth.getSession();
+    const { data } = await client.auth.getSession();
     const token = data.session?.access_token;
     if (!token) {
       throw new ApiError('Please sign in to continue.', 401);

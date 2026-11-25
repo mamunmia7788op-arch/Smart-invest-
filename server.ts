@@ -29,7 +29,13 @@ function normalizeSupabaseUrl(raw: string | undefined): string {
 
 const PORT = Number(process.env.PORT || 3000);
 const SUPABASE_URL = normalizeSupabaseUrl(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL);
-const SUPABASE_ANON_KEY = (process.env.VITE_SUPABASE_ANON_KEY || '').trim().replace(/^["']|["']$/g, '');
+const SUPABASE_ANON_KEY = (
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  ''
+)
+  .trim()
+  .replace(/^["']|["']$/g, '');
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim().replace(/^["']|["']$/g, '');
 
 const isServiceConfigured = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
@@ -304,6 +310,16 @@ async function createApp(): Promise<void> {
   await ensureDatabaseSchemaOnBoot();
   const app = express();
   app.use(express.json({ limit: '256kb' }));
+
+  // Public browser runtime config (only public Supabase URL + anon key, never service secrets)
+  app.get('/api/config', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      supabaseUrl: SUPABASE_URL,
+      supabaseAnonKey: SUPABASE_ANON_KEY,
+      configured: isClientConfigured,
+    });
+  });
 
   // Health & config readiness check (never exposes secret values or project identifiers)
   app.get('/api/health', async (_req, res) => {

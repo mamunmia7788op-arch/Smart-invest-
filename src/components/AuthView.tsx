@@ -1,16 +1,16 @@
 import { useState, type FormEvent } from 'react';
 import { AlertCircle, CheckCircle2, Lock, ShieldCheck } from 'lucide-react';
-import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { getSupabaseClient, initSupabaseClient, isSupabaseConfigured } from '../lib/supabase';
 import type { SystemHealth } from '../types';
 
 interface AuthViewProps {
   health: SystemHealth | null;
+  supabaseReady: boolean;
   onSuccess: () => void;
-  onGoToAdminLogin: () => void;
   onCancel: () => void;
 }
 
-export function AuthView({ health, onSuccess, onGoToAdminLogin, onCancel }: AuthViewProps) {
+export function AuthView({ health, supabaseReady, onSuccess, onCancel }: AuthViewProps) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -20,7 +20,9 @@ export function AuthView({ health, onSuccess, onGoToAdminLogin, onCancel }: Auth
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const clientReady = isSupabaseConfigured && (health?.supabaseClientConfigured ?? true);
+  const clientReady =
+    (supabaseReady || isSupabaseConfigured || Boolean(getSupabaseClient())) &&
+    (health?.supabaseClientConfigured ?? true);
   const serverReady = health?.supabaseServerConfigured ?? true;
 
   const handleSubmit = async (e: FormEvent) => {
@@ -28,7 +30,8 @@ export function AuthView({ health, onSuccess, onGoToAdminLogin, onCancel }: Auth
     setError(null);
     setNotice(null);
 
-    if (!supabase) {
+    const client = getSupabaseClient() ?? (await initSupabaseClient());
+    if (!client) {
       setError('Supabase authentication is not configured in environment variables.');
       return;
     }
@@ -53,17 +56,18 @@ export function AuthView({ health, onSuccess, onGoToAdminLogin, onCancel }: Auth
     setLoading(true);
     try {
       if (mode === 'login') {
-        const { error: signInError } = await supabase.auth.signInWithPassword({
+        const { error: signInError } = await client.auth.signInWithPassword({
           email: trimmedEmail,
           password,
         });
         if (signInError) throw signInError;
         onSuccess();
       } else {
-        const { data, error: signUpError } = await supabase.auth.signUp({
+        const { data, error: signUpError } = await client.auth.signUp({
           email: trimmedEmail,
           password,
           options: {
+            emailRedirectTo: window.location.origin,
             data: {
               full_name: fullName.trim(),
               phone: phone.trim(),
@@ -254,13 +258,7 @@ export function AuthView({ health, onSuccess, onGoToAdminLogin, onCancel }: Auth
           >
             ← Back to Overview
           </button>
-          <button
-            type="button"
-            onClick={onGoToAdminLogin}
-            className="text-blue-700 hover:text-blue-800 font-medium cursor-pointer"
-          >
-            Admin Portal Sign In →
-          </button>
+          <span className="text-slate-400">Encrypted Supabase Session</span>
         </div>
       </div>
     </main>

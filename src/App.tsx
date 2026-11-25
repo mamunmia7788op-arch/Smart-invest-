@@ -9,7 +9,7 @@ import { Navbar } from './components/Navbar';
 import { PackagePurchaseModal } from './components/PackagePurchaseModal';
 import { apiRequest } from './lib/api';
 import { CANONICAL_PACKAGE_CATALOG } from './lib/packageDefaults';
-import { isSupabaseConfigured, supabase } from './lib/supabase';
+import { getSupabaseClient, initSupabaseClient, isSupabaseConfigured } from './lib/supabase';
 import type {
   AdminOverviewData,
   AppRoute,
@@ -46,6 +46,9 @@ export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromPathname(window.location.pathname));
   const [memberTab, setMemberTab] = useState<MemberTab>('overview');
   const [health, setHealth] = useState<SystemHealth | null>(null);
+  const [supabaseReady, setSupabaseReady] = useState<boolean>(() =>
+    isSupabaseConfigured || Boolean(getSupabaseClient())
+  );
   const [session, setSession] = useState<Session | null>(null);
   const [publicPackages, setPublicPackages] = useState<InvestmentPackage[]>(CANONICAL_PACKAGE_CATALOG);
 
@@ -81,9 +84,18 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Fetch system readiness & live packages from server
+  // Fetch system readiness, runtime public Supabase config, & live packages from server
   useEffect(() => {
     void (async () => {
+      try {
+        const client = await initSupabaseClient();
+        if (client) {
+          setSupabaseReady(true);
+        }
+      } catch {
+        // Ignore transient config failure on boot
+      }
+
       try {
         const healthRes = await apiRequest<SystemHealth>('/api/health');
         setHealth(healthRes);
@@ -137,9 +149,10 @@ export default function App() {
 
   // Subscribe to Supabase Auth session
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return;
+    const client = getSupabaseClient();
+    if (!supabaseReady || !client) return;
 
-    void supabase.auth.getSession().then(({ data }) => {
+    void client.auth.getSession().then(({ data }) => {
       setSession(data.session);
       if (data.session) {
         void loadMemberBootstrap();
@@ -148,7 +161,7 @@ export default function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    } = client.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       if (nextSession) {
         void loadMemberBootstrap();
@@ -156,13 +169,9 @@ export default function App() {
         setMemberData(null);
         setAdminData(null);
         setRoute((prev) => {
-          if (prev === 'dashboard') {
+          if (prev === 'dashboard' || prev === 'admin') {
             window.history.replaceState(null, '', '/');
             return 'home';
-          }
-          if (prev === 'admin') {
-            window.history.replaceState(null, '', '/admin-login');
-            return 'admin-login';
           }
           return prev;
         });
@@ -172,25 +181,42 @@ export default function App() {
     return () => {
       subscription.unsubscribe();
     };
-  }, [loadMemberBootstrap]);
+  }, [supabaseReady, loadMemberBootstrap]);
 
-  // Redirect unauthenticated direct visits to /dashboard or /admin
+  // Redirect non-admin members away from admin routes & load admin data for authorized admins
   useEffect(() => {
-    if (route === 'dashboard' && !session && !memberLoading) {
-      // Wait briefly on mount only if supabase is resolving initial session; auth guard renders cleanly
+    if (
+      (route === 'admin' || route === 'admin-login') &&
+      session &&
+      memberData?.profile &&
+      memberData.profile.role !== 'admin'
+    ) {
+      window.history.replaceState(null, '', '/dashboard');
+      setRoute('dashboard');
+      return;
     }
     if (route === 'admin' && session && memberData?.profile.role === 'admin') {
       void loadAdminOverview();
     }
-  }, [route, session, memberLoading, memberData?.profile.role, loadAdminOverview]);
+  }, [route, session, memberData?.profile, loadAdminOverview]);
 
   const handleNavigate = (targetRoute: AppRoute, sectionId?: string) => {
     if (targetRoute === 'dashboard' && !session) {
       navigateTo('auth');
       return;
     }
-    if (targetRoute === 'admin' && (!session || memberData?.profile.role !== 'admin')) {
-      navigateTo('admin-login');
+    if (targetRoute === 'admin') {
+      if (!session) {
+        navigateTo('auth');
+        return;
+      }
+      if (memberData?.profile.role !== 'admin') {
+        navigateTo('dashboard');
+        return;
+      }
+    }
+    if (targetRoute === 'admin-login' && session && memberData?.profile.role !== 'admin') {
+      navigateTo('dashboard');
       return;
     }
     navigateTo(targetRoute);
@@ -205,8 +231,9 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
-    if (supabase) {
-      await supabase.auth.signOut();
+    const client = getSupabaseClient();
+    if (client) {
+      await client.auth.signOut();
     }
     setSession(null);
     setMemberData(null);
@@ -237,7 +264,12 @@ export default function App() {
     route === 'dashboard' && !isAuthenticated
       ? 'auth'
       : route === 'admin' && !isAuthenticated
-      ? 'admin-login'
+      ? 'auth'
+      : (route === 'admin' || route === 'admin-login') &&
+        isAuthenticated &&
+        currentProfile &&
+        currentProfile.role !== 'admin'
+      ? 'dashboard'
       : route;
 
   return (
@@ -272,18 +304,18 @@ export default function App() {
             onSelectPackage={(pkg) => setSelectedPkg(pkg)}
             onNavigateAuth={() => handleNavigate('auth')}
             onNavigateDashboard={() => handleNavigate('dashboard')}
-            onNavigateAdminLogin={() => handleNavigate(currentProfile?.role === 'admin' ? 'admin' : 'admin-login')}
+            onNavigateAdminLogin={() => handleNavigate('admin')}
           />
         )}
 
         {effectiveRoute === 'auth' && (
           <AuthView
             health={health}
+            supabaseReady={supabaseReady}
             onSuccess={() => {
               navigateTo('dashboard');
               void loadMemberBootstrap();
             }}
-            onGoToAdminLogin={() => navigateTo('admin-login')}
             onCancel={() => navigateTo('home')}
           />
         )}
@@ -291,6 +323,7 @@ export default function App() {
         {effectiveRoute === 'admin-login' && (
           <AdminLoginView
             health={health}
+            supabaseReady={supabaseReady}
             onSuccess={() => {
               void loadMemberBootstrap().then(() => {
                 navigateTo('admin');

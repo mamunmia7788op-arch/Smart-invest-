@@ -310,14 +310,18 @@ export function LandingSection({
             </p>
           </div>
           <div className="flex items-center gap-5 text-xs text-slate-500">
-            <button
-              type="button"
-              onClick={onNavigateAdminLogin}
-              className="font-medium text-slate-700 hover:text-blue-700 transition-colors cursor-pointer"
-            >
-              Admin Portal
-            </button>
-            <span aria-hidden="true">·</span>
+            {isAuthenticated && profile?.role === 'admin' && (
+              <>
+                <button
+                  type="button"
+                  onClick={onNavigateAdminLogin}
+                  className="font-medium text-slate-700 hover:text-blue-700 transition-colors cursor-pointer"
+                >
+                  Admin Panel
+                </button>
+                <span aria-hidden="true">·</span>
+              </>
+            )}
             <span>© {new Date().getFullYear()} SMART INVEST. Demo transactions only.</span>
           </div>
         </div>

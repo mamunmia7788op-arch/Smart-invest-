@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from 'react';
 import { AlertCircle, Lock, ShieldCheck } from 'lucide-react';
 import { ApiError, apiRequest } from '../lib/api';
-import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { getSupabaseClient, initSupabaseClient, isSupabaseConfigured } from '../lib/supabase';
 import type { Profile, SystemHealth } from '../types';
 
 interface AdminLoginViewProps {
   health: SystemHealth | null;
+  supabaseReady: boolean;
   onSuccess: () => void;
   onGoToMemberLogin: () => void;
   onCancel: () => void;
@@ -13,6 +14,7 @@ interface AdminLoginViewProps {
 
 export function AdminLoginView({
   health,
+  supabaseReady,
   onSuccess,
   onGoToMemberLogin,
   onCancel,
@@ -22,14 +24,17 @@ export function AdminLoginView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const clientReady = isSupabaseConfigured && (health?.supabaseClientConfigured ?? true);
+  const clientReady =
+    (supabaseReady || isSupabaseConfigured || Boolean(getSupabaseClient())) &&
+    (health?.supabaseClientConfigured ?? true);
   const serverReady = health?.supabaseServerConfigured ?? true;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!supabase) {
+    const client = getSupabaseClient() ?? (await initSupabaseClient());
+    if (!client) {
       setError('Supabase authentication is not configured in environment variables.');
       return;
     }
@@ -42,7 +47,7 @@ export function AdminLoginView({
 
     setLoading(true);
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
+      const { error: signInError } = await client.auth.signInWithPassword({
         email: trimmedEmail,
         password,
       });
@@ -54,7 +59,7 @@ export function AdminLoginView({
       });
 
       if (!verify.ok || verify.admin?.role !== 'admin') {
-        await supabase.auth.signOut();
+        await client.auth.signOut();
         throw new Error(
           'Access denied: This portal is restricted to authorized administrators only.'
         );
@@ -64,7 +69,7 @@ export function AdminLoginView({
     } catch (err) {
       // Ensure non-admin or deactivated sessions do not linger on the admin login screen
       if (err instanceof ApiError && err.status === 403) {
-        await supabase.auth.signOut();
+        await client.auth.signOut();
       }
       setError(
         err instanceof Error
