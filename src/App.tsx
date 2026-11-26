@@ -279,7 +279,7 @@ export default function App() {
     setPurchaseToast(`Allocated ${pkg.name} from your verified available balance.`);
     await loadMemberBootstrap();
     navigateTo('dashboard');
-    setMemberTab('packages');
+    setMemberTab('active');
   };
 
   const isAuthenticated = Boolean(session);
