@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-  AlertTriangle,
   ArrowRight,
   Building2,
   Check,
@@ -157,34 +156,21 @@ export function LandingSection({
         </div>
       </section>
 
-      {/* Risk Disclosure Banner */}
-      <section className="border-y border-slate-200 bg-slate-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row items-start sm:items-center gap-3.5">
-          <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5 sm:mt-0" aria-hidden="true" />
-          <p className="text-xs sm:text-sm text-slate-700 leading-relaxed">
-            <span className="font-semibold text-slate-900">Important Risk & Compliance Disclosure:</span> All investments involve financial risk, including possible loss of principal. SMART INVEST does not promise guaranteed profits or fixed returns. Real-money investment operations must not be launched until all applicable legal, regulatory, and payment-provider requirements have been verified.
-          </p>
-        </div>
-      </section>
-
       {/* Investment Packages Section */}
-      <section id="packages" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+      <section id="packages" className="border-t border-slate-200 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
         <div className="max-w-2xl mb-10">
           <p className="text-xs font-semibold text-blue-700 mb-2">Investment Packages</p>
           <h2 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
             Four Structured Participation Tiers
           </h2>
           <p className="text-sm sm:text-base text-slate-600 mt-2 leading-relaxed">
-            Packages can only be purchased using your verified available balance. Review the duration, risk level, and terms and conditions carefully prior to allocation.
+            Packages can only be purchased using your verified available balance. Review the duration and terms and conditions carefully prior to allocation.
           </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {packages.map((pkg) => {
             const isExpanded = expandedTermsId === pkg.id;
-            const dailyRate = Number(pkg.daily_return_rate ?? 30);
-            const dailyIncome = Math.round(Number(pkg.price) * dailyRate) / 100;
-            const totalDemoReturn = Math.round(dailyIncome * Number(pkg.duration_days) * 100) / 100;
             return (
               <article
                 key={pkg.id}
@@ -193,7 +179,7 @@ export function LandingSection({
                 <div className="space-y-4">
                   <div>
                     <div className="text-xs text-slate-500">
-                      Tier 0{pkg.tier_order} · {pkg.risk_level} Risk
+                      Tier 0{pkg.tier_order}
                     </div>
                     <h3 className="font-display text-xl font-bold text-slate-900 mt-1">{pkg.name}</h3>
                   </div>
@@ -207,21 +193,9 @@ export function LandingSection({
 
                   <div className="space-y-2 text-xs py-2.5 border-y border-slate-100">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-500">Daily Demo Income ({dailyRate}%)</span>
-                      <span className="font-mono tabular-nums font-semibold text-emerald-700">
-                        +{formatCurrency(dailyIncome)} / day
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
                       <span className="text-slate-500">Commitment Duration</span>
                       <span className="font-mono tabular-nums font-semibold text-slate-900">
                         {pkg.duration_days} Days
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-500">Total {pkg.duration_days}d Demo Return</span>
-                      <span className="font-mono tabular-nums font-semibold text-blue-700">
-                        +{formatCurrency(totalDemoReturn)}
                       </span>
                     </div>
                   </div>
@@ -313,9 +287,9 @@ export function LandingSection({
               </div>
               <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
                 <Users className="w-5 h-5 text-blue-700" aria-hidden="true" />
-                <h3 className="font-display text-base font-bold text-slate-900">04. 35% Referral & Daily Claims</h3>
+                <h3 className="font-display text-base font-bold text-slate-900">04. 35% Referral Commission</h3>
                 <p className="text-sm text-slate-600 leading-relaxed">
-                  Share your personal referral link to receive 35% commission on partner package allocations and claim scheduled daily demo payouts every 24 hours.
+                  Share your personal referral link to receive 35% instant commission on partner package allocations.
                 </p>
               </div>
             </div>
@@ -406,7 +380,7 @@ export function LandingSection({
           <div>
             <div className="font-display text-sm font-bold text-slate-900">SMART INVEST</div>
             <p className="text-xs text-slate-500 mt-1">
-              Capital is at risk. No guaranteed returns. Verify all regulatory and payment-provider approvals before live deployment.
+              Structured package participation with verified bKash, Nagad, and Rocket balance accounting.
             </p>
           </div>
           <div className="flex items-center gap-5 text-xs text-slate-500">
@@ -422,7 +396,7 @@ export function LandingSection({
                 <span aria-hidden="true">·</span>
               </>
             )}
-            <span>© {new Date().getFullYear()} SMART INVEST. Demo transactions only.</span>
+            <span>© {new Date().getFullYear()} SMART INVEST.</span>
           </div>
         </div>
       </footer>

@@ -418,10 +418,10 @@ export function MemberDashboard({
                   <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
                     <div>
                       <h2 className="font-display text-base font-bold text-slate-900">
-                        Purchased Package History &amp; Daily Demo Income
+                        Purchased Package History
                       </h2>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        Demo daily returns unlock every 24 hours per active allocation until term completion.
+                        Track your active package allocations and terms below.
                       </p>
                     </div>
                   </div>
@@ -452,11 +452,10 @@ export function MemberDashboard({
                           <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
                             <th className="py-3 px-4 font-medium">Package</th>
                             <th className="py-3 px-4 font-medium text-right">Amount</th>
-                            <th className="py-3 px-4 font-medium text-right">Daily Demo Income</th>
                             <th className="py-3 px-4 font-medium text-right">Credited</th>
                             <th className="py-3 px-4 font-medium">Maturity</th>
                             <th className="py-3 px-4 font-medium">Status</th>
-                            <th className="py-3 px-4 font-medium text-right">Daily Payout</th>
+                            <th className="py-3 px-4 font-medium text-right">Payout</th>
                             <th className="py-3 px-4 font-medium text-right">Terms</th>
                           </tr>
                         </thead>
@@ -480,9 +479,6 @@ export function MemberDashboard({
                                 <td className="py-3 px-4 font-medium text-slate-900">{p.package_name}</td>
                                 <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-900">
                                   {formatCurrency(p.purchase_price)}
-                                </td>
-                                <td className="py-3 px-4 text-right font-mono tabular-nums text-emerald-700 font-medium">
-                                  +{formatCurrency(dailyAmt)} ({rate}%)
                                 </td>
                                 <td className="py-3 px-4 text-right font-mono tabular-nums text-xs text-slate-700">
                                   {daysCredited}/{p.duration_days}d · {formatCurrency(totalCredited)}
@@ -533,8 +529,6 @@ export function MemberDashboard({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   {(packages.length > 0 ? packages : fallbackPackages).map((pkg) => {
                     const canAfford = Number(profile.available_balance) >= Number(pkg.price);
-                    const dailyRate = Number(pkg.daily_return_rate ?? 30);
-                    const dailyIncome = Math.round(Number(pkg.price) * dailyRate) / 100;
                     return (
                       <div
                         key={pkg.id}
@@ -544,7 +538,7 @@ export function MemberDashboard({
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <div className="text-xs text-slate-500">
-                                Tier 0{pkg.tier_order} · {pkg.risk_level} Risk
+                                Tier 0{pkg.tier_order}
                               </div>
                               <h2 className="font-display text-lg font-bold text-slate-900 mt-0.5">{pkg.name}</h2>
                             </div>
@@ -556,13 +550,6 @@ export function MemberDashboard({
                                 {pkg.duration_days} Days
                               </div>
                             </div>
-                          </div>
-
-                          <div className="flex items-center justify-between text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-                            <span className="text-emerald-900 font-medium">Daily Demo Income ({dailyRate}%)</span>
-                            <span className="font-mono tabular-nums font-bold text-emerald-700">
-                              +{formatCurrency(dailyIncome)} / day
-                            </span>
                           </div>
 
                           <p className="text-sm text-slate-600 leading-relaxed">{pkg.summary}</p>

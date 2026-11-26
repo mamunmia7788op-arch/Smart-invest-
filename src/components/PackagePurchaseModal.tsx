@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { AlertTriangle, Check, CheckCircle2, Copy, ShieldAlert, X } from 'lucide-react';
+import { Check, CheckCircle2, Copy, ShieldAlert, X } from 'lucide-react';
 import { apiRequest } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import type { InvestmentPackage, PaymentInstruction, PaymentMethod, Profile } from '../types';
@@ -84,7 +84,7 @@ export function PackagePurchaseModal({
   const handleSubmitPurchase = async () => {
     setError(null);
     if (!termsAccepted) {
-      setError('Please confirm you have read the Terms & Conditions and Risk Disclosure.');
+      setError('Please confirm you have read the Terms & Conditions.');
       return;
     }
     setSubmitting(true);
@@ -155,17 +155,11 @@ export function PackagePurchaseModal({
           </button>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-slate-50 border border-slate-200 rounded-lg p-4">
+        <div className="grid grid-cols-2 gap-4 bg-slate-50 border border-slate-200 rounded-lg p-4">
           <div>
             <div className="text-xs text-slate-500">Purchase Price</div>
             <div className="font-mono tabular-nums text-base font-semibold text-slate-900 mt-0.5">
               {formatCurrency(pkg.price)}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-slate-500">Daily Demo ({Number(pkg.daily_return_rate ?? 30)}%)</div>
-            <div className="font-mono tabular-nums text-base font-semibold text-emerald-700 mt-0.5">
-              +{formatCurrency(Math.round(Number(pkg.price) * Number(pkg.daily_return_rate ?? 30)) / 100)}
             </div>
           </div>
           <div>
@@ -174,23 +168,12 @@ export function PackagePurchaseModal({
               {pkg.duration_days} Days
             </div>
           </div>
-          <div>
-            <div className="text-xs text-slate-500">Risk Profile</div>
-            <div className="text-sm font-semibold text-slate-900 mt-0.5">{pkg.risk_level}</div>
-          </div>
         </div>
 
         <div>
           <h3 className="text-sm font-semibold text-slate-900 mb-2">Terms and Conditions</h3>
           <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 text-xs leading-relaxed text-slate-700 whitespace-pre-line max-h-40 overflow-y-auto">
             {pkg.terms_and_conditions}
-          </div>
-        </div>
-
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3.5 flex gap-3">
-          <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
-          <div className="text-xs leading-relaxed text-amber-900">
-            <span className="font-semibold">Risk Disclosure:</span> Capital participation involves market and operational risk, including potential loss of principal. SMART INVEST makes no guarantee of profit or fixed return. Live real-money operations are subject to legal, KYC, and payment-provider verification.
           </div>
         </div>
 
@@ -433,7 +416,7 @@ export function PackagePurchaseModal({
                 className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
               />
               <span>
-                I have read and accept the Terms & Conditions and acknowledge that capital is at risk with no guaranteed return.
+                I have read and accept the Terms & Conditions for this package.
               </span>
             </label>
 
