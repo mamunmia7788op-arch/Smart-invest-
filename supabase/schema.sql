@@ -671,6 +671,9 @@ begin
   if v_amount is null or v_amount <= 0 then
     raise exception 'Withdrawal amount must be greater than zero.';
   end if;
+  if v_amount < 200 then
+    raise exception 'Minimum withdrawal amount is 200 BDT.';
+  end if;
 
   if p_method not in ('bKash', 'Nagad', 'Rocket') then
     raise exception 'Unsupported withdrawal method.';

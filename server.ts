@@ -1037,6 +1037,10 @@ async function createApp(): Promise<void> {
       res.status(400).json({ error: 'Enter a valid positive withdrawal amount.' });
       return;
     }
+    if (amount < 200) {
+      res.status(400).json({ error: 'Minimum withdrawal amount is ৳200.00.' });
+      return;
+    }
     if (!VALID_METHODS.has(method)) {
       res.status(400).json({ error: 'Withdrawal method must be bKash, Nagad, or Rocket.' });
       return;
