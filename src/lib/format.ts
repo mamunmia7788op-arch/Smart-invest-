@@ -93,3 +93,21 @@ export function sanitizeEmailAddress(raw: string | null | undefined): string | n
   return null;
 }
 
+export function isSyntheticMemberEmail(email: string | null | undefined): boolean {
+  return typeof email === 'string' && email.toLowerCase().endsWith('@member.smartinvest.local');
+}
+
+export function formatMemberContact(
+  member: { email?: string | null; phone?: string | null } | null | undefined,
+  fallback = 'Member'
+): string {
+  if (!member) return fallback;
+  if (!isSyntheticMemberEmail(member.email) && member.email) {
+    return member.email;
+  }
+  if (member.phone && member.phone.trim()) {
+    return member.phone.trim();
+  }
+  return fallback;
+}
+

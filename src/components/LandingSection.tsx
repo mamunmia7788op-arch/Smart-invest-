@@ -171,6 +171,8 @@ export function LandingSection({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {packages.map((pkg) => {
             const isExpanded = expandedTermsId === pkg.id;
+            const dailyRate = Number(pkg.daily_return_rate ?? 30);
+            const dailyIncome = Math.round(Number(pkg.price) * dailyRate) / 100;
             return (
               <article
                 key={pkg.id}
@@ -192,6 +194,12 @@ export function LandingSection({
                   </div>
 
                   <div className="space-y-2 text-xs py-2.5 border-y border-slate-100">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">{dailyRate}% Income</span>
+                      <span className="font-mono tabular-nums font-semibold text-emerald-700">
+                        +{formatCurrency(dailyIncome)}
+                      </span>
+                    </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-500">Commitment Duration</span>
                       <span className="font-mono tabular-nums font-semibold text-slate-900">

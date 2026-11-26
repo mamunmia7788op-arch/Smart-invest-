@@ -155,11 +155,17 @@ export function PackagePurchaseModal({
           </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 bg-slate-50 border border-slate-200 rounded-lg p-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-slate-50 border border-slate-200 rounded-lg p-4">
           <div>
             <div className="text-xs text-slate-500">Purchase Price</div>
             <div className="font-mono tabular-nums text-base font-semibold text-slate-900 mt-0.5">
               {formatCurrency(pkg.price)}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">{Number(pkg.daily_return_rate ?? 30)}% Income</div>
+            <div className="font-mono tabular-nums text-base font-semibold text-emerald-700 mt-0.5">
+              +{formatCurrency(Math.round(Number(pkg.price) * Number(pkg.daily_return_rate ?? 30)) / 100)}
             </div>
           </div>
           <div>

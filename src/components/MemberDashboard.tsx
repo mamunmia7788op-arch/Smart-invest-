@@ -22,6 +22,8 @@ import {
   formatCurrency,
   formatDate,
   formatDateTime,
+  formatMemberContact,
+  isSyntheticMemberEmail,
   sanitizeEmailAddress,
   sanitizeTelegramUrl,
   sanitizeWhatsAppUrl,
@@ -107,10 +109,8 @@ export function MemberDashboard({
   const [supportSubmitting, setSupportSubmitting] = useState(false);
   const [supportFeedback, setSupportFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
-  // Terms & Daily Claim State
+  // Terms Modal State
   const [selectedPurchaseTerms, setSelectedPurchaseTerms] = useState<PackagePurchase | null>(null);
-  const [claimingId, setClaimingId] = useState<string | null>(null);
-  const [claimFeedback, setClaimFeedback] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   if (loading && !data) {
     return (
@@ -264,35 +264,6 @@ export function MemberDashboard({
     }
   };
 
-  const handleClaimDailyReward = async (purchase: PackagePurchase) => {
-    setClaimFeedback(null);
-    setClaimingId(purchase.id);
-    try {
-      const res = await apiRequest<{
-        result: {
-          days_credited: number;
-          duration_days: number;
-          reward_amount: number;
-        };
-      }>(`/api/member/purchases/${purchase.id}/claim`, {
-        method: 'POST',
-        requireAuth: true,
-      });
-      setClaimFeedback({
-        type: 'success',
-        text: `Credited +${formatCurrency(res.result.reward_amount)} (Day ${res.result.days_credited}/${res.result.duration_days}) for ${purchase.package_name} to your verified balance.`,
-      });
-      await onRefresh();
-    } catch (err) {
-      setClaimFeedback({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Unable to claim daily return right now.',
-      });
-    } finally {
-      setClaimingId(null);
-    }
-  };
-
   const handleSupportSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSupportFeedback(null);
@@ -341,9 +312,11 @@ export function MemberDashboard({
             <div className="bg-white border border-slate-200 rounded-xl p-4">
               <div className="text-xs text-slate-500">Member Account</div>
               <div className="font-display text-sm font-bold text-slate-900 mt-0.5 truncate">
-                {profile.full_name || profile.email}
+                {profile.full_name || formatMemberContact(profile)}
               </div>
-              <div className="text-xs text-slate-500 truncate">{profile.email}</div>
+              <div className="text-xs text-slate-500 truncate">
+                {profile.phone || formatMemberContact(profile)}
+              </div>
               {profile.referral_code && (
                 <div className="mt-2 text-xs text-slate-600">
                   Ref Code: <span className="font-mono font-semibold text-blue-700">{profile.referral_code}</span>
@@ -413,7 +386,7 @@ export function MemberDashboard({
                   </div>
                 )}
 
-                {/* Purchased Package History & 24h Claim */}
+                {/* Purchased Package History & Automatic 24h Credits */}
                 <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
                   <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
                     <div>
@@ -421,26 +394,10 @@ export function MemberDashboard({
                         Purchased Package History
                       </h2>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        Track your active package allocations and terms below.
+                        Income is automatically added to your available balance every 24 hours.
                       </p>
                     </div>
                   </div>
-                  {claimFeedback && (
-                    <div
-                      className={`mx-5 mt-4 rounded-lg px-3.5 py-2.5 text-xs flex items-start gap-2 border ${
-                        claimFeedback.type === 'success'
-                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                          : 'bg-red-50 border-red-200 text-red-800'
-                      }`}
-                    >
-                      {claimFeedback.type === 'success' ? (
-                        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                      ) : (
-                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                      )}
-                      <span>{claimFeedback.text}</span>
-                    </div>
-                  )}
                   {purchases.length === 0 ? (
                     <div className="p-6 text-center text-sm text-slate-600">
                       You have not purchased any investment packages yet. Choose a package below to get started.
@@ -452,10 +409,11 @@ export function MemberDashboard({
                           <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
                             <th className="py-3 px-4 font-medium">Package</th>
                             <th className="py-3 px-4 font-medium text-right">Amount</th>
+                            <th className="py-3 px-4 font-medium text-right">Income</th>
                             <th className="py-3 px-4 font-medium text-right">Credited</th>
                             <th className="py-3 px-4 font-medium">Maturity</th>
                             <th className="py-3 px-4 font-medium">Status</th>
-                            <th className="py-3 px-4 font-medium text-right">Payout</th>
+                            <th className="py-3 px-4 font-medium text-right">Auto Credit</th>
                             <th className="py-3 px-4 font-medium text-right">Terms</th>
                           </tr>
                         </thead>
@@ -471,7 +429,7 @@ export function MemberDashboard({
                             const remainingMins = Math.max(1, Math.ceil((nextClaimMs - Date.now()) / 60000));
                             const hrsLeft = Math.floor(remainingMins / 60);
                             const minsLeft = remainingMins % 60;
-                            const canClaim =
+                            const isDueNow =
                               p.status === 'active' && daysCredited < p.duration_days && Date.now() >= nextClaimMs;
 
                             return (
@@ -479,6 +437,9 @@ export function MemberDashboard({
                                 <td className="py-3 px-4 font-medium text-slate-900">{p.package_name}</td>
                                 <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-900">
                                   {formatCurrency(p.purchase_price)}
+                                </td>
+                                <td className="py-3 px-4 text-right font-mono tabular-nums text-emerald-700 font-medium">
+                                  {rate}% (+{formatCurrency(dailyAmt)})
                                 </td>
                                 <td className="py-3 px-4 text-right font-mono tabular-nums text-xs text-slate-700">
                                   {daysCredited}/{p.duration_days}d · {formatCurrency(totalCredited)}
@@ -492,18 +453,13 @@ export function MemberDashboard({
                                 <td className="py-3 px-4 text-right whitespace-nowrap">
                                   {p.status !== 'active' || daysCredited >= p.duration_days ? (
                                     <span className="text-xs text-slate-500">Completed</span>
-                                  ) : canClaim ? (
-                                    <button
-                                      type="button"
-                                      disabled={claimingId === p.id}
-                                      onClick={() => void handleClaimDailyReward(p)}
-                                      className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 rounded-md cursor-pointer"
-                                    >
-                                      {claimingId === p.id ? 'Crediting...' : `Claim +${formatCurrency(dailyAmt)}`}
-                                    </button>
+                                  ) : isDueNow ? (
+                                    <span className="text-xs font-medium text-emerald-700">
+                                      Auto-crediting...
+                                    </span>
                                   ) : (
                                     <span className="text-xs text-slate-500 font-mono">
-                                      Next in {hrsLeft}h {minsLeft}m
+                                      Auto in {hrsLeft}h {minsLeft}m
                                     </span>
                                   )}
                                 </td>
@@ -529,6 +485,8 @@ export function MemberDashboard({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   {(packages.length > 0 ? packages : fallbackPackages).map((pkg) => {
                     const canAfford = Number(profile.available_balance) >= Number(pkg.price);
+                    const dailyRate = Number(pkg.daily_return_rate ?? 30);
+                    const dailyIncome = Math.round(Number(pkg.price) * dailyRate) / 100;
                     return (
                       <div
                         key={pkg.id}
@@ -550,6 +508,13 @@ export function MemberDashboard({
                                 {pkg.duration_days} Days
                               </div>
                             </div>
+                          </div>
+
+                          <div className="flex items-center justify-between text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                            <span className="text-emerald-900 font-medium">{dailyRate}% Income</span>
+                            <span className="font-mono tabular-nums font-bold text-emerald-700">
+                              +{formatCurrency(dailyIncome)}
+                            </span>
                           </div>
 
                           <p className="text-sm text-slate-600 leading-relaxed">{pkg.summary}</p>
@@ -824,9 +789,6 @@ export function MemberDashboard({
             {/* TAB: WITHDRAWALS */}
             {activeTab === 'withdrawals' && (
               <div className="space-y-6">
-                <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-900">
-                  <span className="font-semibold">Demo Transaction Mode:</span> Withdrawal requests place an atomic balance hold for demonstration review. No real-money payouts occur until compliance approvals are complete.
-                </div>
                 <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div>
@@ -1406,18 +1368,20 @@ export function MemberDashboard({
                 )}
 
                 <form onSubmit={handleProfileSave} className="space-y-4">
-                  <div>
-                    <label htmlFor="prof-email" className="block text-xs font-medium text-slate-700 mb-1.5">
-                      Registered Email (Read-Only)
-                    </label>
-                    <input
-                      id="prof-email"
-                      type="email"
-                      disabled
-                      value={profile.email}
-                      className="w-full px-3.5 py-2.5 text-sm bg-slate-100 text-slate-600 border border-slate-200 rounded-lg"
-                    />
-                  </div>
+                  {!isSyntheticMemberEmail(profile.email) && (
+                    <div>
+                      <label htmlFor="prof-email" className="block text-xs font-medium text-slate-700 mb-1.5">
+                        Registered Email (Read-Only)
+                      </label>
+                      <input
+                        id="prof-email"
+                        type="email"
+                        disabled
+                        value={profile.email}
+                        className="w-full px-3.5 py-2.5 text-sm bg-slate-100 text-slate-600 border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                  )}
 
                   <div>
                     <label htmlFor="prof-refcode" className="block text-xs font-medium text-slate-700 mb-1.5">

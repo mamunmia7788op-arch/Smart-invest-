@@ -1113,6 +1113,109 @@ begin
 end;
 $$;
 
+-- 4H. Automatic 24-Hour Package Income Settlement (No manual Claim required)
+create or replace function public.settle_due_package_rewards(
+  p_user_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_purchase public.package_purchases%rowtype;
+  v_member public.profiles%rowtype;
+  v_anchor timestamptz;
+  v_elapsed_cycles integer;
+  v_remaining_cycles integer;
+  v_due_cycles integer;
+  v_daily_reward numeric(14, 2);
+  v_credit_total numeric(14, 2);
+  v_balance_before numeric(14, 2);
+  v_balance_after numeric(14, 2);
+  v_new_days integer;
+  v_new_total numeric(14, 2);
+  v_new_status text;
+  v_settled_count integer := 0;
+  v_total_credited numeric(14, 2) := 0.00;
+begin
+  for v_purchase in
+    select *
+    from public.package_purchases
+    where status = 'active'
+      and coalesce(days_credited, 0) < duration_days
+      and (p_user_id is null or user_id = p_user_id)
+      and coalesce(last_credited_at, starts_at) + interval '24 hours' <= now()
+    order by coalesce(last_credited_at, starts_at) asc
+    for update skip locked
+  loop
+    v_anchor := coalesce(v_purchase.last_credited_at, v_purchase.starts_at);
+    v_elapsed_cycles := floor(extract(epoch from (now() - v_anchor)) / 86400)::integer;
+    v_remaining_cycles := greatest(0, v_purchase.duration_days - coalesce(v_purchase.days_credited, 0));
+    v_due_cycles := least(v_elapsed_cycles, v_remaining_cycles);
+
+    if v_due_cycles <= 0 then
+      continue;
+    end if;
+
+    v_daily_reward := coalesce(
+      nullif(v_purchase.daily_reward_amount, 0),
+      round(v_purchase.purchase_price * coalesce(v_purchase.daily_return_rate, 30.00) / 100.0, 2)
+    );
+    if v_daily_reward <= 0 then
+      continue;
+    end if;
+
+    select * into v_member
+    from public.profiles
+    where id = v_purchase.user_id
+    for update;
+
+    if not found or v_member.status <> 'active' then
+      continue;
+    end if;
+
+    v_credit_total := round(v_daily_reward * v_due_cycles, 2);
+    v_balance_before := v_member.available_balance;
+    v_balance_after := round(v_balance_before + v_credit_total, 2);
+    v_new_days := coalesce(v_purchase.days_credited, 0) + v_due_cycles;
+    v_new_total := round(coalesce(v_purchase.total_credited, 0) + v_credit_total, 2);
+    v_new_status := case when v_new_days >= v_purchase.duration_days then 'completed' else 'active' end;
+
+    update public.profiles
+    set available_balance = v_balance_after
+    where id = v_member.id;
+
+    update public.package_purchases
+    set days_credited = v_new_days,
+        total_credited = v_new_total,
+        last_credited_at = v_anchor + make_interval(hours => v_due_cycles * 24),
+        status = v_new_status
+    where id = v_purchase.id;
+
+    insert into public.financial_ledger (
+      user_id, entry_type, direction, amount,
+      balance_before, balance_after,
+      reference_table, reference_id, description, created_by
+    ) values (
+      v_member.id, 'package_reward', 'credit', v_credit_total,
+      v_balance_before, v_balance_after,
+      'package_purchases', v_purchase.id,
+      format('Auto 24h income (%s%% · Day %s/%s) for %s', coalesce(v_purchase.daily_return_rate, 30.00), v_new_days, v_purchase.duration_days, v_purchase.package_name),
+      v_member.id
+    );
+
+    v_settled_count := v_settled_count + 1;
+    v_total_credited := round(v_total_credited + v_credit_total, 2);
+  end loop;
+
+  return jsonb_build_object(
+    'settled_count', v_settled_count,
+    'total_credited', v_total_credited
+  );
+end;
+$$;
+
 -- Restrict RPC execution to service_role (server-side backend) so client cannot call admin RPCs directly
 revoke all on function public.approve_deposit(uuid, uuid, text) from public, anon, authenticated;
 revoke all on function public.reject_deposit(uuid, uuid, text) from public, anon, authenticated;
@@ -1121,6 +1224,7 @@ revoke all on function public.approve_withdrawal(uuid, uuid, text) from public, 
 revoke all on function public.reject_withdrawal(uuid, uuid, text) from public, anon, authenticated;
 revoke all on function public.purchase_package(uuid, uuid, boolean) from public, anon, authenticated;
 revoke all on function public.claim_package_reward(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.settle_due_package_rewards(uuid) from public, anon, authenticated;
 
 grant execute on function public.approve_deposit(uuid, uuid, text) to service_role;
 grant execute on function public.reject_deposit(uuid, uuid, text) to service_role;
@@ -1129,6 +1233,7 @@ grant execute on function public.approve_withdrawal(uuid, uuid, text) to service
 grant execute on function public.reject_withdrawal(uuid, uuid, text) to service_role;
 grant execute on function public.purchase_package(uuid, uuid, boolean) to service_role;
 grant execute on function public.claim_package_reward(uuid, uuid) to service_role;
+grant execute on function public.settle_due_package_rewards(uuid) to service_role;
 
 -- ----------------------------------------------------------------------------
 -- 5. SEED DATA (Packages & Payment Instructions)

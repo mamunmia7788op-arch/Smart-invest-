@@ -19,7 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest } from '../lib/api';
-import { formatCurrency, formatDate, formatDateTime } from '../lib/format';
+import { formatCurrency, formatDate, formatDateTime, formatMemberContact, isSyntheticMemberEmail } from '../lib/format';
 import type {
   AdminOverviewData,
   InvestmentPackage,
@@ -256,7 +256,7 @@ export function AdminDashboard({
       });
       setFeedback({
         type: 'success',
-        text: `${member.email} is now ${nextStatus}.`,
+        text: `${formatMemberContact(member)} is now ${nextStatus}.`,
       });
       await onRefresh();
     } catch (err) {
@@ -281,7 +281,7 @@ export function AdminDashboard({
       });
       setFeedback({
         type: 'success',
-        text: `${member.email} role updated to ${nextRole}.`,
+        text: `${formatMemberContact(member)} role updated to ${nextRole}.`,
       });
       setInspectedMember((prev) => (prev && prev.id === member.id ? { ...prev, role: nextRole } : prev));
       await onRefresh();
@@ -790,7 +790,7 @@ export function AdminDashboard({
                         <tr key={d.id} className="hover:bg-slate-50">
                           <td className="py-3 px-4">
                             <div className="font-medium text-slate-900">{member?.full_name || 'Member'}</div>
-                            <div className="text-xs text-slate-500">{member?.email || d.user_id}</div>
+                            <div className="text-xs text-slate-500">{formatMemberContact(member, d.user_id)}</div>
                           </td>
                           <td className="py-3 px-4 font-medium text-slate-900">{d.payment_method}</td>
                           <td className="py-3 px-4 font-mono text-xs text-slate-700">{d.sender_account}</td>
@@ -899,7 +899,7 @@ export function AdminDashboard({
                         <tr key={w.id} className="hover:bg-slate-50">
                           <td className="py-3 px-4">
                             <div className="font-medium text-slate-900">{member?.full_name || 'Member'}</div>
-                            <div className="text-xs text-slate-500">{member?.email || w.user_id}</div>
+                            <div className="text-xs text-slate-500">{formatMemberContact(member, w.user_id)}</div>
                           </td>
                           <td className="py-3 px-4 font-medium text-slate-900">{w.payment_method}</td>
                           <td className="py-3 px-4 font-mono text-xs font-semibold text-slate-900">{w.account_number}</td>
@@ -997,7 +997,7 @@ export function AdminDashboard({
                     <tr key={m.id} className="hover:bg-slate-50">
                       <td className="py-3 px-4">
                         <div className="font-medium text-slate-900">{m.full_name || '—'}</div>
-                        <div className="text-xs text-slate-500">{m.email}</div>
+                        <div className="text-xs text-slate-500">{formatMemberContact(m)}</div>
                       </td>
                       <td className="py-3 px-4 font-mono text-xs font-semibold text-blue-700">
                         {m.referral_code || '—'}
@@ -1088,7 +1088,7 @@ export function AdminDashboard({
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="text-xs text-slate-500">
-                        Tier 0{pkg.tier_order} · {pkg.risk_level} Risk
+                        Tier 0{pkg.tier_order}
                       </div>
                       <h3 className="font-display text-lg font-bold text-slate-900">{pkg.name}</h3>
                     </div>
@@ -1102,9 +1102,9 @@ export function AdminDashboard({
                       </span>
                     </div>
                     <div>
-                      <span className="text-xs text-slate-500">Daily Demo: </span>
+                      <span className="text-xs text-slate-500">{dailyRate}% Income: </span>
                       <span className="font-mono tabular-nums font-semibold text-emerald-700">
-                        {dailyRate}% (+{formatCurrency(dailyIncome)}/day)
+                        +{formatCurrency(dailyIncome)}
                       </span>
                     </div>
                     <div>
@@ -1160,7 +1160,7 @@ export function AdminDashboard({
                       <th className="py-3 px-4 font-medium">Member</th>
                       <th className="py-3 px-4 font-medium">Package</th>
                       <th className="py-3 px-4 font-medium text-right">Amount</th>
-                      <th className="py-3 px-4 font-medium text-right">Daily Demo</th>
+                      <th className="py-3 px-4 font-medium text-right">Income</th>
                       <th className="py-3 px-4 font-medium text-right">Credited</th>
                       <th className="py-3 px-4 font-medium">Start</th>
                       <th className="py-3 px-4 font-medium">Maturity</th>
@@ -1179,7 +1179,7 @@ export function AdminDashboard({
                         <tr key={p.id} className="hover:bg-slate-50">
                           <td className="py-3 px-4 text-xs">
                             <div className="font-medium text-slate-900">{owner?.full_name || 'Member'}</div>
-                            <div className="text-slate-500">{owner?.email || p.user_id}</div>
+                            <div className="text-slate-500">{formatMemberContact(owner, p.user_id)}</div>
                           </td>
                           <td className="py-3 px-4 font-medium text-slate-900">{p.package_name}</td>
                           <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold">
@@ -1263,11 +1263,11 @@ export function AdminDashboard({
                           </td>
                           <td className="py-3 px-4 text-xs">
                             <div className="font-medium text-slate-900">{referrer?.full_name || 'Member'}</div>
-                            <div className="text-slate-500">{referrer?.email || c.referrer_id}</div>
+                            <div className="text-slate-500">{formatMemberContact(referrer, c.referrer_id)}</div>
                           </td>
                           <td className="py-3 px-4 text-xs">
                             <div className="font-medium text-slate-900">{buyer?.full_name || 'Member'}</div>
-                            <div className="text-slate-500">{buyer?.email || c.referred_user_id}</div>
+                            <div className="text-slate-500">{formatMemberContact(buyer, c.referred_user_id)}</div>
                           </td>
                           <td className="py-3 px-4 font-medium text-slate-900">{c.package_name}</td>
                           <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-700">
@@ -1522,7 +1522,7 @@ export function AdminDashboard({
                               <StatusLabel status={t.status} />
                             </div>
                             <div className="text-xs text-slate-500 mt-0.5">
-                              {sender?.full_name || 'Member'} · {sender?.email || t.user_id} ·{' '}
+                              {sender?.full_name || 'Member'} · {formatMemberContact(sender, t.user_id)} ·{' '}
                               {formatDateTime(t.created_at)}
                             </div>
                           </div>
@@ -1679,7 +1679,7 @@ export function AdminDashboard({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Daily Demo Rate (%)</label>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Income Rate (%)</label>
                 <input
                   type="number"
                   step="0.01"
@@ -1897,10 +1897,11 @@ export function AdminDashboard({
               <div>
                 <div className="text-xs text-blue-700 font-semibold">Member Account Inspection</div>
                 <h3 className="font-display text-lg font-bold text-slate-900 mt-0.5">
-                  {inspectedMember.full_name || inspectedMember.email}
+                  {inspectedMember.full_name || formatMemberContact(inspectedMember)}
                 </h3>
                 <div className="text-xs text-slate-500">
-                  {inspectedMember.email} · {inspectedMember.phone || 'No phone'} · ID:{' '}
+                  {!isSyntheticMemberEmail(inspectedMember.email) ? `${inspectedMember.email} · ` : ''}
+                  {inspectedMember.phone || 'No phone'} · ID:{' '}
                   <span className="font-mono">{inspectedMember.id}</span>
                 </div>
               </div>

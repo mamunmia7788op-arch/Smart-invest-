@@ -107,8 +107,29 @@ function isMissingColumnOrConstraintError(error: { code?: string | null } | null
   return error.code === '42703' || error.code === 'PGRST204' || error.code === '23514';
 }
 
+function isMissingFunctionError(error: { code?: string | null } | null | undefined): boolean {
+  if (!error) return false;
+  return error.code === 'PGRST202' || error.code === '42883';
+}
+
 function deriveReferralCode(userId: string): string {
   return `SI${userId.replace(/-/g, '').slice(0, 6).toUpperCase()}`;
+}
+
+function normalizePhoneDigits(raw: string): string {
+  let digits = raw.trim().replace(/[^\d]/g, '');
+  if (digits.startsWith('8801') && digits.length === 13) {
+    digits = digits.slice(2);
+  }
+  return digits;
+}
+
+function phoneToInternalAuthEmail(digits: string): string {
+  return `phone_${digits}@member.smartinvest.local`;
+}
+
+function isSyntheticMemberEmail(email: string | undefined | null): boolean {
+  return typeof email === 'string' && email.toLowerCase().endsWith('@member.smartinvest.local');
 }
 
 function maskEmail(email: string): string {
@@ -316,6 +337,7 @@ async function ensureDatabaseSchemaOnBoot(): Promise<void> {
     refCommCheck,
     supportCfgCheck,
     supportTktCheck,
+    autoRewardCheck,
   ] = await Promise.all([
     supabaseAdmin.from('investment_packages').select('id').limit(1),
     supabaseAdmin.from('payment_instructions').select('id').limit(1),
@@ -326,6 +348,9 @@ async function ensureDatabaseSchemaOnBoot(): Promise<void> {
     supabaseAdmin.from('referral_commissions').select('id').limit(1),
     supabaseAdmin.from('support_settings').select('id').limit(1),
     supabaseAdmin.from('support_tickets').select('id').limit(1),
+    supabaseAdmin.rpc('settle_due_package_rewards', {
+      p_user_id: '00000000-0000-0000-0000-000000000000',
+    }),
   ]);
 
   const missing =
@@ -337,7 +362,8 @@ async function ensureDatabaseSchemaOnBoot(): Promise<void> {
     isMissingColumnOrConstraintError(signupBonusCheck.error) ||
     isMissingTableError(refCommCheck.error) ||
     isMissingTableError(supportCfgCheck.error) ||
-    isMissingTableError(supportTktCheck.error);
+    isMissingTableError(supportTktCheck.error) ||
+    isMissingFunctionError(autoRewardCheck.error);
   const accessToken = (process.env.SUPABASE_ACCESS_TOKEN || '').trim().replace(/^["']|["']$/g, '');
   const projectRef = extractSupabaseProjectRef(SUPABASE_URL);
 
@@ -382,8 +408,23 @@ async function ensureDatabaseSchemaOnBoot(): Promise<void> {
   }
 }
 
+async function settleDuePackageRewards(userId?: string): Promise<number> {
+  if (!supabaseAdmin) return 0;
+  try {
+    const { data, error } = await supabaseAdmin.rpc('settle_due_package_rewards', {
+      p_user_id: userId ?? null,
+    });
+    if (error || !data || typeof data !== 'object') return 0;
+    const count = Number((data as Record<string, unknown>).settled_count ?? 0);
+    return Number.isFinite(count) ? count : 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function createApp(): Promise<void> {
   await ensureDatabaseSchemaOnBoot();
+  await settleDuePackageRewards();
   const app = express();
   app.use(express.json({ limit: '256kb' }));
 
@@ -468,9 +509,211 @@ async function createApp(): Promise<void> {
     res.json({ supportSettings: data });
   });
 
+  // Member registration using Full Name + Phone Number + Password (instant login, no email required)
+  app.post('/api/auth/member-register', async (req: Request, res: Response) => {
+    if (!supabaseAdmin || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      res.status(503).json({ error: 'Authentication service is not configured yet.' });
+      return;
+    }
+
+    const fullName = cleanString(req.body?.full_name, 120);
+    const rawPhone = cleanString(req.body?.phone, 32);
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const referralInput = cleanString(req.body?.referral_code, 32)
+      .toUpperCase()
+      .replace(/[^A-Z0-9_-]/g, '');
+
+    if (fullName.length < 2) {
+      res.status(400).json({ error: 'Please enter your full name.' });
+      return;
+    }
+
+    const digits = normalizePhoneDigits(rawPhone);
+    if (digits.length < 8 || digits.length > 15) {
+      res.status(400).json({ error: 'Please enter a valid mobile number (e.g. 01XXXXXXXXX).' });
+      return;
+    }
+
+    if (password.length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+      return;
+    }
+
+    const { data: existingPhone } = await supabaseAdmin
+      .from('profiles')
+      .select('id')
+      .or(`phone.eq.${digits},phone.eq.+88${digits},phone.eq.88${digits}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingPhone) {
+      res.status(409).json({ error: 'This mobile number is already registered. Please sign in instead.' });
+      return;
+    }
+
+    const internalEmail = phoneToInternalAuthEmail(digits);
+    const { data: createdUserData, error: createUserError } = await supabaseAdmin.auth.admin.createUser({
+      email: internalEmail,
+      password,
+      email_confirm: true,
+      user_metadata: {
+        full_name: fullName,
+        phone: digits,
+        ...(referralInput ? { referral_code: referralInput } : {}),
+      },
+    });
+
+    if (createUserError || !createdUserData?.user) {
+      const msg = (createUserError?.message || '').toLowerCase();
+      if (msg.includes('already') || msg.includes('registered') || msg.includes('exists')) {
+        res.status(409).json({ error: 'This mobile number is already registered. Please sign in instead.' });
+        return;
+      }
+      res.status(400).json({ error: createUserError?.message || 'Unable to create member account.' });
+      return;
+    }
+
+    const newUserId = createdUserData.user.id;
+    const { data: existingProfile } = await supabaseAdmin
+      .from('profiles')
+      .select('id')
+      .eq('id', newUserId)
+      .maybeSingle();
+
+    if (!existingProfile) {
+      let referrerId: string | null = null;
+      if (referralInput) {
+        const { data: referrer } = await supabaseAdmin
+          .from('profiles')
+          .select('id, status')
+          .ilike('referral_code', referralInput)
+          .neq('id', newUserId)
+          .maybeSingle<{ id: string; status: string }>();
+        if (referrer && referrer.status === 'active') {
+          referrerId = referrer.id;
+        }
+      }
+
+      const { data: inserted } = await supabaseAdmin
+        .from('profiles')
+        .insert({
+          id: newUserId,
+          email: internalEmail,
+          full_name: fullName,
+          phone: digits,
+          role: 'member',
+          status: 'active',
+          available_balance: 100,
+          signup_bonus_credited: true,
+          referral_code: deriveReferralCode(newUserId),
+          referred_by: referrerId,
+        })
+        .select('id')
+        .maybeSingle();
+
+      if (inserted) {
+        await supabaseAdmin.from('financial_ledger').insert({
+          user_id: newUserId,
+          entry_type: 'signup_bonus',
+          direction: 'credit',
+          amount: 100,
+          balance_before: 0,
+          balance_after: 100,
+          reference_table: 'profiles',
+          reference_id: newUserId,
+          description: 'Welcome signup bonus (৳100.00)',
+          created_by: newUserId,
+        });
+      }
+    }
+
+    const authClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    const { data: signInData, error: signInError } = await authClient.auth.signInWithPassword({
+      email: internalEmail,
+      password,
+    });
+
+    if (signInError || !signInData.session) {
+      res.status(500).json({ error: 'Account created, but automatic sign-in failed. Please sign in manually.' });
+      return;
+    }
+
+    res.status(201).json({ session: signInData.session });
+  });
+
+  // Member sign-in using Phone Number + Password
+  app.post('/api/auth/member-login', async (req: Request, res: Response) => {
+    if (!supabaseAdmin || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      res.status(503).json({ error: 'Authentication service is not configured yet.' });
+      return;
+    }
+
+    const rawPhone = cleanString(req.body?.phone, 32);
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const digits = normalizePhoneDigits(rawPhone);
+
+    if (digits.length < 8 || digits.length > 15 || !password) {
+      res.status(400).json({ error: 'Mobile number and password are required.' });
+      return;
+    }
+
+    const { data: matchedProfile } = await supabaseAdmin
+      .from('profiles')
+      .select('id, email, status')
+      .or(`phone.eq.${digits},phone.eq.+88${digits},phone.eq.88${digits}`)
+      .limit(1)
+      .maybeSingle<{ id: string; email: string; status: string }>();
+
+    if (matchedProfile && matchedProfile.status === 'deactivated') {
+      res.status(403).json({ error: 'This account has been deactivated by an administrator.' });
+      return;
+    }
+
+    const targetEmail = matchedProfile?.email || phoneToInternalAuthEmail(digits);
+    const authClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    const { data: signInData, error: signInError } = await authClient.auth.signInWithPassword({
+      email: targetEmail,
+      password,
+    });
+
+    if (signInError || !signInData.session || !signInData.user) {
+      res.status(401).json({ error: 'Invalid mobile number or password.' });
+      return;
+    }
+
+    const { data: profileCheck } = await supabaseAdmin
+      .from('profiles')
+      .select('status')
+      .eq('id', signInData.user.id)
+      .maybeSingle<{ status: string }>();
+
+    if (profileCheck?.status === 'deactivated') {
+      res.status(403).json({ error: 'This account has been deactivated by an administrator.' });
+      return;
+    }
+
+    res.json({ session: signInData.session });
+  });
+
   // Member bootstrap: profile, packages, payment instructions, deposits, withdrawals, purchases, referrals, support
   app.get('/api/member/bootstrap', requireAuth, async (req: AuthedRequest, res: Response) => {
     const userId = req.profile!.id;
+    const settledCount = await settleDuePackageRewards(userId);
+    let currentProfile = req.profile!;
+    if (settledCount > 0) {
+      const { data: freshProfile } = await supabaseAdmin!
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle<Record<string, unknown>>();
+      if (freshProfile) {
+        currentProfile = normalizeProfileRow(freshProfile, req.authUser!);
+      }
+    }
 
     const [
       packagesRes,
@@ -561,7 +804,7 @@ async function createApp(): Promise<void> {
     }));
 
     res.json({
-      profile: req.profile,
+      profile: currentProfile,
       packages: packagesRes.error ? [] : packagesRes.data || [],
       paymentInstructions: instructionsRes.error ? [] : instructionsRes.data || [],
       deposits: depositsRes.error ? [] : depositsRes.data || [],
@@ -628,21 +871,40 @@ async function createApp(): Promise<void> {
   // Update member profile (safe fields only)
   app.patch('/api/member/profile', requireAuth, async (req: AuthedRequest, res: Response) => {
     const fullName = cleanString(req.body?.full_name, 120);
-    const phone = cleanString(req.body?.phone, 32);
+    const rawPhone = cleanString(req.body?.phone, 32);
 
     if (fullName.length < 2) {
       res.status(400).json({ error: 'Full name must be at least 2 characters.' });
       return;
     }
 
-    if (phone && !/^[+\d\s\-()]{6,25}$/.test(phone)) {
+    const digits = rawPhone ? normalizePhoneDigits(rawPhone) : '';
+    if (isSyntheticMemberEmail(req.profile!.email) && (digits.length < 8 || digits.length > 15)) {
+      res.status(400).json({ error: 'Please enter a valid mobile number (e.g. 01XXXXXXXXX).' });
+      return;
+    }
+    if (rawPhone && (digits.length < 8 || digits.length > 15)) {
       res.status(400).json({ error: 'Please enter a valid phone number.' });
       return;
     }
 
+    if (digits) {
+      const { data: conflict } = await supabaseAdmin!
+        .from('profiles')
+        .select('id')
+        .neq('id', req.profile!.id)
+        .or(`phone.eq.${digits},phone.eq.+88${digits},phone.eq.88${digits}`)
+        .limit(1)
+        .maybeSingle();
+      if (conflict) {
+        res.status(409).json({ error: 'Another member account is already using this mobile number.' });
+        return;
+      }
+    }
+
     let { data, error } = await supabaseAdmin!
       .from('profiles')
-      .update({ full_name: fullName, phone })
+      .update({ full_name: fullName, phone: digits || rawPhone })
       .eq('id', req.profile!.id)
       .select('*')
       .single<Record<string, unknown>>();
@@ -862,6 +1124,7 @@ async function createApp(): Promise<void> {
   });
 
   app.get('/api/admin/overview', requireAdmin, async (_req: AuthedRequest, res: Response) => {
+    await settleDuePackageRewards();
     const [
       profilesRes,
       depositsRes,
@@ -1392,6 +1655,15 @@ async function createApp(): Promise<void> {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  let isAutoSettling = false;
+  setInterval(() => {
+    if (isAutoSettling) return;
+    isAutoSettling = true;
+    void settleDuePackageRewards().finally(() => {
+      isAutoSettling = false;
+    });
+  }, 60_000);
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`SMART INVEST server running on http://0.0.0.0:${PORT}`);
