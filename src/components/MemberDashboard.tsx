@@ -609,9 +609,6 @@ export function MemberDashboard({
             {/* TAB: DEPOSITS */}
             {activeTab === 'deposits' && (
               <div className="space-y-6">
-                <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-900">
-                  <span className="font-semibold">Demo Transaction Mode:</span> Deposit submissions operate as verification demonstrations only. Do not send real funds until legal and payment-provider requirements are verified.
-                </div>
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                   {/* Payment Instructions */}
                   <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
